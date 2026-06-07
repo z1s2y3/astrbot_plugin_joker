@@ -1,0 +1,101 @@
+{
+  "whitelist_groups": {
+    "type": "list",
+    "title": "白名单群组",
+    "description": "无需绑定ID和授权即可使用所有功能的群组",
+    "items": {
+      "type": "string"
+    },
+    "default": []
+  },
+  "admin_groups": {
+    "type": "list",
+    "title": "管理员群组",
+    "description": "需要管理员权限才能使用绑定/解绑功能的群组（留空则所有群组可用）",
+    "items": {
+      "type": "string"
+    },
+    "default": []
+  },
+  "owner_ids": {
+    "type": "list",
+    "title": "主人账号",
+    "description": "全局主人账号ID列表（主人可以无视所有限制使用所有命令）",
+    "items": {
+      "type": "string"
+    },
+    "default": []
+  },
+  "enable_query": {
+    "type": "bool",
+    "title": "启用SCUM查询功能",
+    "description": "是否启用服务器查询相关命令（id查询、查询在线）",
+    "default": true
+  },
+  "enable_binding": {
+    "type": "bool",
+    "title": "启用SCUM绑定功能",
+    "description": "是否启用服务器绑定相关命令（绑定id、解绑）",
+    "default": true
+  },
+  "enable_auth": {
+    "type": "bool",
+    "title": "启用授权系统",
+    "description": "是否启用卡密授权系统（激活卡密、授权查询等）",
+    "default": false
+  },
+  "enable_settings": {
+    "type": "bool",
+    "title": "启用群组设置功能",
+    "description": "是否启用群组设置相关命令（查看设置、设置、克隆设置）",
+    "default": true
+  },
+  "enable_help": {
+    "type": "bool",
+    "title": "启用帮助功能",
+    "description": "是否启用帮助命令（帮助）",
+    "default": true
+  },
+  "default_enabled": {
+    "type": "bool",
+    "title": "默认启用查询",
+    "description": "未在白名单中的群组是否需要绑定ID才能使用查询功能",
+    "default": true
+  },
+  "allow_other_query": {
+    "type": "bool",
+    "title": "允许查询其他服务器",
+    "description": "绑定ID后是否允许查询其他服务器（全局默认）",
+    "default": true
+  },
+  "allow_slash_prefix": {
+    "type": "bool",
+    "title": "启用命令功能",
+    "description": "是否允许使用插件命令（关闭后所有命令不可用）",
+    "default": true
+  },
+  "owner_ignore_auth": {
+    "type": "bool",
+    "title": "主人不受授权限制",
+    "description": "主人是否不受卡密授权系统限制",
+    "default": true
+  },
+  "owner_ignore_binding": {
+    "type": "bool",
+    "title": "主人不受绑定限制",
+    "description": "主人是否不受服务器绑定限制",
+    "default": true
+  },
+  "auth_key": {
+    "type": "string",
+    "title": "管理密钥",
+    "description": "用于生成和验证卡密的密钥（建议修改为复杂密钥）",
+    "default": "joker_plugin_secret_key_2024"
+  },
+  "auto_delete_used_keys_days": {
+    "type": "int",
+    "title": "自动删除已用卡密天数",
+    "description": "自动删除超过该天数的已使用卡密记录（0表示不自动删除）",
+    "default": 0
+  }
+}

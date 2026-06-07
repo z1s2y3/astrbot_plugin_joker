@@ -1,0 +1,6 @@
+name: astrbot_plugin_joker
+display_name: Joker
+desc: SCUM服务器查询与卡密授权插件
+version: v2.0.0
+author: joker
+repo: https://github.com/z1s2y3/astrbot_plugin_joker
