@@ -1,101 +1,762 @@
 {
-  "whitelist_groups": {
-    "type": "list",
-    "title": "白名单群组",
-    "description": "无需绑定ID和授权即可使用所有功能的群组",
+  "basic": {
+    "description": "基础设置",
+    "hint": "全局基础配置，包括白名单、主人账号等",
+    "type": "object",
     "items": {
-      "type": "string"
-    },
-    "default": []
+      "whitelist_groups": {
+        "description": "白名单群组",
+        "type": "list",
+        "items": {
+          "type": "string"
+        },
+        "default": [],
+        "hint": "无需绑定ID和授权即可使用所有功能的群组"
+      },
+      "admin_groups": {
+        "description": "管理员群组",
+        "type": "list",
+        "items": {
+          "type": "string"
+        },
+        "default": [],
+        "hint": "需要管理员权限才能使用绑定/解绑功能的群组"
+      },
+      "owner_ids": {
+        "description": "主人账号",
+        "type": "list",
+        "items": {
+          "type": "string"
+        },
+        "default": [],
+        "hint": "全局主人账号ID列表，主人无视所有限制"
+      },
+      "allow_slash_prefix": {
+        "description": "启用命令功能",
+        "type": "bool",
+        "default": true,
+        "hint": "是否允许使用插件命令（关闭后所有命令不可用）"
+      },
+      "enable_help": {
+        "description": "启用帮助功能",
+        "type": "bool",
+        "default": true,
+        "hint": "是否启用帮助命令（帮助）"
+      },
+      "enable_settings": {
+        "description": "启用群组设置功能",
+        "type": "bool",
+        "default": true,
+        "hint": "是否启用群组设置相关命令"
+      }
+    }
   },
-  "admin_groups": {
-    "type": "list",
-    "title": "管理员群组",
-    "description": "需要管理员权限才能使用绑定/解绑功能的群组（留空则所有群组可用）",
+  "scum": {
+    "description": "SCUM查询",
+    "hint": "SCUM服务器查询和绑定相关配置",
+    "type": "object",
     "items": {
-      "type": "string"
-    },
-    "default": []
+      "enable_query": {
+        "description": "启用查询功能",
+        "type": "bool",
+        "default": true
+      },
+      "enable_binding": {
+        "description": "启用绑定功能",
+        "type": "bool",
+        "default": true
+      },
+      "default_enabled": {
+        "description": "默认启用查询",
+        "type": "bool",
+        "default": true,
+        "hint": "未在白名单中的群组是否需要绑定ID才能使用查询功能"
+      },
+      "allow_other_query": {
+        "description": "允许查询其他服务器",
+        "type": "bool",
+        "default": true,
+        "hint": "绑定ID后是否允许查询其他服务器（全局默认）"
+      },
+      "permission_mode": {
+        "description": "权限模式",
+        "type": "string",
+        "default": "read_only",
+        "options": ["read_only", "full_access"],
+        "hint": "read_only: 仅允许使用，不允许修改配置；full_access: 完全访问"
+      }
+    }
   },
-  "owner_ids": {
-    "type": "list",
-    "title": "主人账号",
-    "description": "全局主人账号ID列表（主人可以无视所有限制使用所有命令）",
+  "auth": {
+    "description": "授权系统",
+    "hint": "卡密授权相关配置",
+    "type": "object",
     "items": {
-      "type": "string"
-    },
-    "default": []
+      "enable_auth": {
+        "description": "启用授权系统",
+        "type": "bool",
+        "default": false,
+        "hint": "是否启用卡密授权系统"
+      },
+      "auth_key": {
+        "description": "管理密钥",
+        "type": "string",
+        "default": "joker_plugin_secret_key_2024",
+        "hint": "用于生成和验证卡密的密钥（建议修改为复杂密钥）"
+      },
+      "auto_delete_used_keys_days": {
+        "description": "自动删除已用卡密天数",
+        "type": "int",
+        "default": 0,
+        "hint": "自动删除超过该天数的已使用卡密记录（0表示不自动删除）"
+      },
+      "owner_ignore_auth": {
+        "description": "主人不受授权限制",
+        "type": "bool",
+        "default": true
+      },
+      "owner_ignore_binding": {
+        "description": "主人不受绑定限制",
+        "type": "bool",
+        "default": true
+      },
+      "auth_detail_query": {
+        "description": "授权查询显示详情",
+        "type": "bool",
+        "default": false,
+        "hint": "开启后管理员可查看详细授权信息（包含激活时间和到期时间）"
+      },
+      "permission_mode": {
+        "description": "权限模式",
+        "type": "string",
+        "default": "read_only",
+        "options": ["read_only", "full_access"],
+        "hint": "read_only: 仅允许查询授权状态；full_access: 允许生成卡密等管理操作"
+      }
+    }
   },
-  "enable_query": {
-    "type": "bool",
-    "title": "启用SCUM查询功能",
-    "description": "是否启用服务器查询相关命令（id查询、查询在线）",
-    "default": true
-  },
-  "enable_binding": {
-    "type": "bool",
-    "title": "启用SCUM绑定功能",
-    "description": "是否启用服务器绑定相关命令（绑定id、解绑）",
-    "default": true
-  },
-  "enable_auth": {
-    "type": "bool",
-    "title": "启用授权系统",
-    "description": "是否启用卡密授权系统（激活卡密、授权查询等）",
-    "default": false
-  },
-  "enable_settings": {
-    "type": "bool",
-    "title": "启用群组设置功能",
-    "description": "是否启用群组设置相关命令（查看设置、设置、克隆设置）",
-    "default": true
-  },
-  "enable_help": {
-    "type": "bool",
-    "title": "启用帮助功能",
-    "description": "是否启用帮助命令（帮助）",
-    "default": true
-  },
-  "default_enabled": {
-    "type": "bool",
-    "title": "默认启用查询",
-    "description": "未在白名单中的群组是否需要绑定ID才能使用查询功能",
-    "default": true
-  },
-  "allow_other_query": {
-    "type": "bool",
-    "title": "允许查询其他服务器",
-    "description": "绑定ID后是否允许查询其他服务器（全局默认）",
-    "default": true
-  },
-  "allow_slash_prefix": {
-    "type": "bool",
-    "title": "启用命令功能",
-    "description": "是否允许使用插件命令（关闭后所有命令不可用）",
-    "default": true
-  },
-  "owner_ignore_auth": {
-    "type": "bool",
-    "title": "主人不受授权限制",
-    "description": "主人是否不受卡密授权系统限制",
-    "default": true
-  },
-  "owner_ignore_binding": {
-    "type": "bool",
-    "title": "主人不受绑定限制",
-    "description": "主人是否不受服务器绑定限制",
-    "default": true
-  },
-  "auth_key": {
-    "type": "string",
-    "title": "管理密钥",
-    "description": "用于生成和验证卡密的密钥（建议修改为复杂密钥）",
-    "default": "joker_plugin_secret_key_2024"
-  },
-  "auto_delete_used_keys_days": {
-    "type": "int",
-    "title": "自动删除已用卡密天数",
-    "description": "自动删除超过该天数的已使用卡密记录（0表示不自动删除）",
-    "default": 0
+  "qqadmin": {
+    "description": "QQ群管",
+    "hint": "群聊管理相关功能配置",
+    "type": "object",
+    "items": {
+      "enable_group_manage": {
+        "description": "启用群管总开关",
+        "type": "bool",
+        "default": true,
+        "hint": "是否启用群管功能总开关，开启后分群需授权才能使用群管功能"
+      },
+      "owner_ignore_group_manage": {
+        "description": "主人不受群管开关限制",
+        "type": "bool",
+        "default": true
+      },
+      "enable_group_config": {
+        "description": "启用分群设置",
+        "type": "bool",
+        "default": false,
+        "hint": "是否启用分群设置功能（启用功能、禁用功能等）"
+      },
+      "auto_sync_global_config": {
+        "description": "自动同步全局配置",
+        "type": "bool",
+        "default": true,
+        "hint": "当全局配置修改时，自动同步到所有已授权的分群"
+      },
+      "reply": {
+        "description": "自定义回复",
+        "type": "object",
+        "items": {
+          "enable_reply": {
+            "description": "启用自定义回复功能",
+            "type": "bool",
+            "default": false
+          },
+          "default_reply_cooldown": {
+            "description": "默认回复冷却",
+            "type": "int",
+            "default": 0,
+            "hint": "自定义回复的默认冷却时间（秒）"
+          },
+          "enable_keyword_reply": {
+            "description": "启用关键词回复",
+            "type": "bool",
+            "default": true,
+            "hint": "是否启用关键词匹配回复"
+          },
+          "enable_exact_match": {
+            "description": "启用精确匹配",
+            "type": "bool",
+            "default": false,
+            "hint": "是否要求完全匹配关键词才触发回复"
+          },
+          "max_reply_length": {
+            "description": "最大回复长度",
+            "type": "int",
+            "default": 500,
+            "hint": "自定义回复的最大长度限制（字符）"
+          },
+          "use_permission": {
+            "description": "使用权限",
+            "type": "string",
+            "default": "admin",
+            "options": ["member", "admin", "owner"],
+            "hint": "谁可以使用自定义回复功能"
+          },
+          "modify_permission": {
+            "description": "修改权限",
+            "type": "string",
+            "default": "admin",
+            "options": ["admin", "owner"],
+            "hint": "谁可以添加/修改/删除回复"
+          }
+        }
+      },
+      "mute": {
+        "description": "禁言系统",
+        "type": "object",
+        "items": {
+          "enable_mute": {
+            "description": "启用禁言系统",
+            "type": "bool",
+            "default": true
+          },
+          "default_mute_level": {
+            "description": "默认禁言级别",
+            "type": "int",
+            "default": 5,
+            "hint": "自动禁言的默认级别（1-10）"
+          },
+          "default_mute_duration": {
+            "description": "默认禁言时长",
+            "type": "int",
+            "default": 300,
+            "hint": "手动禁言时未指定时长的默认禁言时间（秒）"
+          },
+          "use_permission": {
+            "description": "使用权限",
+            "type": "string",
+            "default": "admin",
+            "options": ["member", "admin", "owner"],
+            "hint": "谁可以使用禁言功能"
+          },
+          "modify_permission": {
+            "description": "修改权限",
+            "type": "string",
+            "default": "admin",
+            "options": ["admin", "owner"],
+            "hint": "谁可以设置禁言级别和时长"
+          }
+        }
+      },
+      "kick": {
+        "description": "踢出系统",
+        "type": "object",
+        "items": {
+          "enable_kick": {
+            "description": "启用踢出系统",
+            "type": "bool",
+            "default": false
+          },
+          "auto_blacklist_on_kick": {
+            "description": "踢人时自动加入黑名单",
+            "type": "bool",
+            "default": false
+          },
+          "default_kick_limit": {
+            "description": "默认踢出上限",
+            "type": "int",
+            "default": 3,
+            "hint": "自动拉黑前的默认踢出次数"
+          },
+          "use_permission": {
+            "description": "使用权限",
+            "type": "string",
+            "default": "admin",
+            "options": ["member", "admin", "owner"],
+            "hint": "谁可以使用踢人功能"
+          },
+          "modify_permission": {
+            "description": "修改权限",
+            "type": "string",
+            "default": "admin",
+            "options": ["admin", "owner"],
+            "hint": "谁可以设置踢出上限等配置"
+          }
+        }
+      },
+      "blacklist": {
+        "description": "黑名单系统",
+        "type": "object",
+        "items": {
+          "enable_blacklist": {
+            "description": "启用黑名单系统",
+            "type": "bool",
+            "default": false
+          },
+          "auto_kick_blacklisted": {
+            "description": "自动踢出黑名单用户",
+            "type": "bool",
+            "default": true,
+            "hint": "检测到黑名单用户在群内时是否自动踢出"
+          },
+          "auto_blacklist_on_leave": {
+            "description": "自动将退群用户加入黑名单",
+            "type": "bool",
+            "default": false,
+            "hint": "用户主动退出群聊时自动加入黑名单"
+          },
+          "auto_blacklist_on_verify_fail": {
+            "description": "验证失败自动加入黑名单",
+            "type": "bool",
+            "default": false,
+            "hint": "验证失败被踢出后自动加入黑名单"
+          },
+          "use_permission": {
+            "description": "使用权限",
+            "type": "string",
+            "default": "admin",
+            "options": ["member", "admin", "owner"],
+            "hint": "谁可以使用黑名单功能（拉黑/解禁）"
+          },
+          "modify_permission": {
+            "description": "修改权限",
+            "type": "string",
+            "default": "admin",
+            "options": ["admin", "owner"],
+            "hint": "谁可以设置黑名单相关配置"
+          }
+        }
+      },
+      "audit": {
+        "description": "入群审核",
+        "type": "object",
+        "items": {
+          "enable_audit": {
+            "description": "启用入群审核",
+            "type": "bool",
+            "default": false
+          },
+          "enable_invite_audit": {
+            "description": "启用邀请审核",
+            "type": "bool",
+            "default": false,
+            "hint": "邀请入群也需要验证"
+          },
+          "default_approval_mode": {
+            "description": "默认审批模式",
+            "type": "string",
+            "default": "math",
+            "options": ["direct", "code", "math", "id"],
+            "hint": "direct（直接批准）/ code（审批码）/ math（算数验证）/ id（ID验证）"
+          },
+          "default_verification_timeout": {
+            "description": "默认验证超时",
+            "type": "int",
+            "default": 300,
+            "hint": "入群验证的默认超时时间（秒），最少60秒"
+          },
+          "max_verify_attempts": {
+            "description": "最大验证尝试次数",
+            "type": "int",
+            "default": 3
+          },
+          "admin_bypass_verify": {
+            "description": "管理员邀请免验证",
+            "type": "bool",
+            "default": true,
+            "hint": "管理员或群主邀请的用户不需要进行验证"
+          },
+          "use_permission": {
+            "description": "使用权限",
+            "type": "string",
+            "default": "admin",
+            "options": ["member", "admin", "owner"],
+            "hint": "谁可以审核入群请求"
+          },
+          "modify_permission": {
+            "description": "修改权限",
+            "type": "string",
+            "default": "admin",
+            "options": ["admin", "owner"],
+            "hint": "谁可以设置审核模式等配置"
+          }
+        }
+      },
+      "recall": {
+        "description": "撤回系统",
+        "type": "object",
+        "items": {
+          "enable_recall": {
+            "description": "启用撤回系统",
+            "type": "bool",
+            "default": false
+          },
+          "enable_self_recall": {
+            "description": "启用自身撤回",
+            "type": "bool",
+            "default": true,
+            "hint": "是否允许机器人撤回自己的消息"
+          },
+          "default_recall_time": {
+            "description": "默认撤回时间",
+            "type": "int",
+            "default": 60,
+            "hint": "消息撤回的默认时间限制（秒）"
+          },
+          "default_recall_mode": {
+            "description": "默认撤回模式",
+            "type": "string",
+            "default": "keyword",
+            "options": ["keyword", "regex", "all"],
+            "hint": "keyword（关键词） / regex（正则） / all（全部）"
+          },
+          "recall_keywords": {
+            "description": "撤回关键词",
+            "type": "list",
+            "items": {
+              "type": "string"
+            },
+            "default": ["广告", "推广", "二维码", "vx", "微信", "qq"],
+            "hint": "包含这些关键词的消息将被自动撤回"
+          },
+          "recall_regex_patterns": {
+            "description": "撤回正则模式",
+            "type": "list",
+            "items": {
+              "type": "string"
+            },
+            "default": [],
+            "hint": "匹配这些正则表达式的消息将被自动撤回"
+          },
+          "enable_admin_recall": {
+            "description": "允许管理员撤回",
+            "type": "bool",
+            "default": true,
+            "hint": "是否允许管理员手动撤回消息"
+          },
+          "recall_notification": {
+            "description": "撤回通知",
+            "type": "bool",
+            "default": false,
+            "hint": "撤回消息时是否发送通知"
+          },
+          "use_permission": {
+            "description": "使用权限",
+            "type": "string",
+            "default": "admin",
+            "options": ["member", "admin", "owner"],
+            "hint": "谁可以使用撤回功能"
+          },
+          "modify_permission": {
+            "description": "修改权限",
+            "type": "string",
+            "default": "admin",
+            "options": ["admin", "owner"],
+            "hint": "谁可以设置撤回关键词等配置"
+          }
+        }
+      },
+      "stats": {
+        "description": "邀请统计",
+        "type": "object",
+        "items": {
+          "enable_stats": {
+            "description": "启用邀请统计",
+            "type": "bool",
+            "default": true,
+            "hint": "是否启用邀请统计功能"
+          },
+          "auto_update_on_join": {
+            "description": "自动更新入群状态",
+            "type": "bool",
+            "default": true,
+            "hint": "当被邀请用户正式入群时自动更新邀请状态"
+          },
+          "abnormal_invite_threshold": {
+            "description": "异常邀请阈值",
+            "type": "int",
+            "default": 5,
+            "hint": "单日邀请超过此数量视为异常邀请"
+          },
+          "use_permission": {
+            "description": "使用权限",
+            "type": "string",
+            "default": "member",
+            "options": ["member", "admin", "owner"],
+            "hint": "谁可以查看统计信息"
+          },
+          "modify_permission": {
+            "description": "修改权限",
+            "type": "string",
+            "default": "admin",
+            "options": ["admin", "owner"],
+            "hint": "谁可以设置统计相关配置"
+          }
+        }
+      },
+      "text_to_image": {
+        "description": "文转图",
+        "type": "object",
+        "items": {
+          "enable_text_to_image": {
+            "description": "启用文转图",
+            "type": "bool",
+            "default": false,
+            "hint": "开启后机器人所有文字回复将转为图片发送"
+          },
+          "font_size": {
+            "description": "字体大小",
+            "type": "int",
+            "default": 16,
+            "hint": "文转图时使用的字体大小"
+          },
+          "font_color": {
+            "description": "字体颜色",
+            "type": "string",
+            "default": "#333333",
+            "hint": "文转图时使用的字体颜色（十六进制）"
+          },
+          "bg_color": {
+            "description": "背景颜色",
+            "type": "string",
+            "default": "#ffffff",
+            "hint": "文转图时使用的背景颜色（十六进制）"
+          },
+          "line_spacing": {
+            "description": "行间距",
+            "type": "int",
+            "default": 4,
+            "hint": "文转图时的行间距（像素）"
+          },
+          "padding": {
+            "description": "内边距",
+            "type": "int",
+            "default": 20,
+            "hint": "图片边缘与文字的距离（像素）"
+          },
+          "modify_permission": {
+            "description": "修改权限",
+            "type": "string",
+            "default": "admin",
+            "options": ["admin", "owner"],
+            "hint": "谁可以开关文转图功能"
+          }
+        }
+      },
+      "welcome": {
+        "description": "入群欢迎",
+        "type": "object",
+        "items": {
+          "enable_welcome": {
+            "description": "启用入群欢迎",
+            "type": "bool",
+            "default": false
+          },
+          "enable_auto_welcome": {
+            "description": "启用自动欢迎",
+            "type": "bool",
+            "default": false,
+            "hint": "自动检测新成员并发送欢迎消息"
+          },
+          "welcome_check_interval": {
+            "description": "欢迎检查间隔",
+            "type": "int",
+            "default": 30,
+            "hint": "新成员加入群聊的检查间隔（秒）"
+          },
+          "default_welcome_delay": {
+            "description": "默认欢迎延迟",
+            "type": "int",
+            "default": 0,
+            "hint": "入群欢迎消息的默认延迟发送时间（秒）"
+          },
+          "default_welcome_message": {
+            "description": "默认欢迎消息",
+            "type": "text",
+            "default": "欢迎 {user_name} 加入本群！",
+            "hint": "支持变量: {user_id}, {user_name}, {group_id}, {time}"
+          },
+          "enable_farewell": {
+            "description": "启用退群通知",
+            "type": "bool",
+            "default": false
+          },
+          "default_farewell_message": {
+            "description": "默认退群消息",
+            "type": "text",
+            "default": "{user_name} 离开了本群",
+            "hint": "支持变量: {user_id}, {user_name}, {group_id}, {time}"
+          },
+          "welcome_keywords": {
+            "description": "欢迎触发关键词",
+            "type": "list",
+            "items": {
+              "type": "string"
+            },
+            "default": ["欢迎", "welcome", "入群"],
+            "hint": "当群内消息包含这些关键词时触发欢迎消息"
+          },
+          "auto_reply_enabled": {
+            "description": "启用自动回复",
+            "type": "bool",
+            "default": true,
+            "hint": "是否启用关键词触发的欢迎回复"
+          },
+          "use_permission": {
+            "description": "使用权限",
+            "type": "string",
+            "default": "member",
+            "options": ["member", "admin", "owner"],
+            "hint": "谁可以触发欢迎消息"
+          },
+          "modify_permission": {
+            "description": "修改权限",
+            "type": "string",
+            "default": "admin",
+            "options": ["admin", "owner"],
+            "hint": "谁可以设置欢迎语等配置"
+          }
+        }
+      },
+      "keyword_filter": {
+        "description": "关键词过滤",
+        "type": "object",
+        "items": {
+          "enable_keyword_filter": {
+            "description": "启用关键词过滤",
+            "type": "bool",
+            "default": false,
+            "hint": "是否启用全局关键词过滤功能"
+          },
+          "filter_keywords": {
+            "description": "过滤关键词",
+            "type": "list",
+            "items": {
+              "type": "string"
+            },
+            "default": ["广告", "推广", "二维码", "vx", "微信", "qq", "群号", "拉人"],
+            "hint": "包含这些关键词的消息将被处理"
+          },
+          "filter_regex_patterns": {
+            "description": "过滤正则模式",
+            "type": "list",
+            "items": {
+              "type": "string"
+            },
+            "default": [],
+            "hint": "匹配这些正则表达式的消息将被处理"
+          },
+          "filter_action": {
+            "description": "过滤动作",
+            "type": "string",
+            "default": "warn",
+            "options": ["warn", "mute", "kick", "blacklist"],
+            "hint": "warn（警告）/ mute（禁言）/ kick（踢出）/ blacklist（拉黑）"
+          },
+          "filter_mute_duration": {
+            "description": "过滤禁言时长",
+            "type": "int",
+            "default": 300,
+            "hint": "触发过滤后禁言的时长（秒）"
+          },
+          "warn_message": {
+            "description": "警告消息",
+            "type": "text",
+            "default": "⚠️ 您的消息包含敏感内容，请遵守群规！",
+            "hint": "触发过滤时发送的警告消息"
+          },
+          "enable_log": {
+            "description": "启用日志记录",
+            "type": "bool",
+            "default": true,
+            "hint": "是否记录关键词过滤事件"
+          },
+          "admin_bypass_filter": {
+            "description": "管理员跳过过滤",
+            "type": "bool",
+            "default": true,
+            "hint": "管理员和群主是否不受关键词过滤限制"
+          },
+          "modify_permission": {
+            "description": "修改权限",
+            "type": "string",
+            "default": "admin",
+            "options": ["admin", "owner"],
+            "hint": "谁可以设置关键词过滤配置"
+          }
+        }
+      },
+      "player_reply": {
+        "description": "用户专属回复",
+        "type": "object",
+        "items": {
+          "enable_player_reply": {
+            "description": "启用用户专属回复",
+            "type": "bool",
+            "default": true,
+            "hint": "是否启用用户专属回复功能"
+          },
+          "use_permission": {
+            "description": "使用权限",
+            "type": "string",
+            "default": "admin",
+            "options": ["member", "admin", "owner"],
+            "hint": "谁可以添加/删除用户专属回复"
+          },
+          "default_at_user": {
+            "description": "默认艾特用户",
+            "type": "bool",
+            "default": true,
+            "hint": "新添加专属回复时是否默认艾特用户"
+          }
+        }
+      },
+      "timed_message": {
+        "description": "定时消息",
+        "type": "object",
+        "items": {
+          "enable_timed_message": {
+            "description": "启用定时消息",
+            "type": "bool",
+            "default": false,
+            "hint": "是否启用定时消息功能"
+          },
+          "use_permission": {
+            "description": "使用权限",
+            "type": "string",
+            "default": "admin",
+            "options": ["member", "admin", "owner"],
+            "hint": "谁可以添加/删除定时消息"
+          },
+          "modify_permission": {
+            "description": "修改权限",
+            "type": "string",
+            "default": "admin",
+            "options": ["admin", "owner"],
+            "hint": "谁可以修改定时消息配置"
+          }
+        }
+      },
+      "sub_admin": {
+        "description": "分群管理员",
+        "type": "object",
+        "items": {
+          "enable_sub_admin": {
+            "description": "启用分群管理员",
+            "type": "bool",
+            "default": false,
+            "hint": "是否启用分群管理员功能"
+          },
+          "modify_permission": {
+            "description": "修改权限",
+            "type": "string",
+            "default": "owner",
+            "options": ["admin", "owner"],
+            "hint": "谁可以添加/删除分群管理员"
+          }
+        }
+      }
+    }
   }
 }

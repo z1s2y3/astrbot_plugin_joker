@@ -1,0 +1,64 @@
+{
+  "qqadmin": {
+    "_comment": "群管功能权限配置 - use_permission: member(所有人) / admin(管理员) / owner(主人)",
+    "reply": {
+      "use_permission": "admin",
+      "modify_permission": "admin",
+      "_comment": "自定义回复 - 使用权限和管理修改权限"
+    },
+    "player_reply": {
+      "use_permission": "admin",
+      "modify_permission": "admin",
+      "_comment": "用户专属回复 - 只有管理员可以添加/删除用户专属回复"
+    },
+    "mute": {
+      "use_permission": "admin",
+      "modify_permission": "admin",
+      "_comment": "禁言系统"
+    },
+    "kick": {
+      "use_permission": "admin",
+      "modify_permission": "admin",
+      "_comment": "踢出系统"
+    },
+    "blacklist": {
+      "use_permission": "admin",
+      "modify_permission": "admin",
+      "_comment": "黑名单系统"
+    },
+    "audit": {
+      "use_permission": "admin",
+      "modify_permission": "admin",
+      "_comment": "入群审核"
+    },
+    "recall": {
+      "use_permission": "admin",
+      "modify_permission": "admin",
+      "_comment": "撤回系统"
+    },
+    "stats": {
+      "use_permission": "member",
+      "modify_permission": "admin",
+      "_comment": "统计系统 - 查看统计所有人可用，修改需管理员"
+    },
+    "welcome": {
+      "use_permission": "member",
+      "modify_permission": "admin",
+      "_comment": "入群欢迎 - 查看欢迎设置所有人可用，修改需管理员"
+    },
+    "group_config": {
+      "use_permission": "admin",
+      "modify_permission": "admin",
+      "_comment": "分群设置"
+    },
+    "keyword_filter": {
+      "use_permission": "admin",
+      "modify_permission": "admin",
+      "_comment": "关键词过滤"
+    },
+    "global_config": {
+      "use_permission": "admin",
+      "_comment": "全局配置 - 仅管理员可用"
+    }
+  }
+}

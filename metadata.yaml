@@ -1,6 +1,6 @@
 name: astrbot_plugin_joker
-display_name: Joker
-desc: SCUM服务器查询与卡密授权插件
-version: v2.0.0
+display_name: Joker QQ群管助手
+desc: Joker - 功能丰富的QQ群管插件，支持入群审核、黑名单、禁言、踢出、撤回、欢迎、自定义回复、用户专属回复、邀请统计、定时消息、分群管理员、连带踢出等功能
+version: v1.5.0
 author: joker
 repo: https://github.com/z1s2y3/astrbot_plugin_joker
