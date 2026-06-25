@@ -1224,8 +1224,9 @@ class MyPlugin(Star):
                 return
 
             logger.info(f"📤 发送成功，获取到消息ID: {message_id}")
+            from .qqadmin.recall import _safe_int
             task = asyncio.create_task(
-                self._recall_bot_message(event.bot, int(message_id), recall_time)
+                self._recall_bot_message(event.bot, _safe_int(message_id, message_id), recall_time)
             )
             task.add_done_callback(self._remove_recall_task)
             self._recall_tasks.add(task)
@@ -1256,32 +1257,38 @@ class MyPlugin(Star):
             group_id = str(event.message_obj.group_id)
             if not group_id or group_id == "None":
                 return
-            
+
             user_id = str(event.message_obj.sender.user_id)
             message_id = getattr(event.message_obj, "message_id", 0) or 0
             message_content = event.message_str or ""
-            
-            # 尝试将 message_id 转为整数，如果不行就跳过
-            try:
-                message_id_int = int(message_id)
-            except (ValueError, TypeError):
-                logger.debug(f"跳过非数字 message_id: {message_id}")
-                return
-            
+
+            # 处理 message_id：支持十进制整数和十六进制字符串
+            if isinstance(message_id, str):
+                message_id = message_id.strip()
+                if message_id.startswith('0x') or message_id.startswith('0X'):
+                    message_id = int(message_id, 16)
+                elif message_id.isdigit():
+                    message_id = int(message_id)
+                else:
+                    # 保留原始字符串（十六进制格式）
+                    pass
+            elif not isinstance(message_id, int):
+                message_id = str(message_id)
+
             # 保存到本地缓存
             from .qqadmin.message_cache import add_group_message
             import re
             content = re.sub(r'\[CQ:.*?\]', '', message_content).strip()
-            
+
             add_group_message(
                 group_id,
-                message_id_int,
+                message_id,
                 user_id,
                 content,
                 int(time.time())
             )
-            logger.debug(f"已缓存消息: group_id={group_id}, user_id={user_id}, message_id={message_id_int}")
-            
+            logger.debug(f"已缓存消息: group_id={group_id}, user_id={user_id}, message_id={message_id}")
+
         except Exception as e:
             logger.error(f"缓存群消息时出错: {e}")
 
@@ -4422,7 +4429,8 @@ Cron格式: 分 时 日 月 周"""
             return
 
         try:
-            await event.bot.delete_msg(message_id=int(message_id))
+            from .qqadmin.recall import _safe_int
+            await event.bot.delete_msg(message_id=_safe_int(message_id, message_id))
             logger.info(f"关键词撤回: 群组 {group_id} 撤回消息 {message_id}")
             
             # 检查是否需要发送通知
@@ -7477,7 +7485,7 @@ Cron格式: 分 时 日 月 周"""
         count = 1
         recall_time_str = None
         is_all = False
-        
+
         # 解析数量和其他参数
         for part in parts:
             if part in ["撤回", "/撤回"]:
@@ -7494,12 +7502,18 @@ Cron格式: 分 时 日 月 周"""
                 continue
             else:
                 recall_time_str = part
-        
+
         # 如果有艾特用户，只看数量，忽略是否"全部"
         if user_id:
             is_all = False
 
-        from .qqadmin.recall import recall_recent_messages, recall_user_messages, get_recall_time, parse_time_duration, get_max_recall_count, get_recall_help_text
+        from .qqadmin.recall import (
+            recall_messages,
+            recall_user_messages_by_api,
+            recall_recent_messages_by_api,
+            get_max_recall_count,
+            get_recall_help_text
+        )
 
         max_count = get_max_recall_count(group_id)
         if count > max_count:
@@ -7507,55 +7521,37 @@ Cron格式: 分 时 日 月 周"""
         if count < 1:
             count = 1
 
-        # 撤回命令默认使用更长的时间范围（12小时），避免消息过期无法撤回
-        default_recall_time = get_recall_time(group_id)
-        recall_time = 12 * 60 * 60  # 12小时
-
-        if recall_time_str:
-            recall_time = parse_time_duration(recall_time_str)
-            if recall_time == 0:
-                recall_time = 12 * 60 * 60
-
-        from .qqadmin.api_client import NapCatAPI
-        api_client = NapCatAPI()
-
         if user_id:
-            result = await recall_user_messages(group_id, user_id, count, api_client, recall_time, bot=event.bot)
-            if result.get("success"):
-                res = result.get("result", {})
+            # 撤回指定用户的消息
+            result = await recall_user_messages_by_api(event, user_id, count)
+            if result.get("success") is not False:
+                res = result
                 success_count = res.get("success", 0)
-                skipped_count = res.get("skipped", 0)
                 failed_count = res.get("failed", 0)
+                total_messages = res.get("total", 0)
                 add_operation_log(group_id, str(event.message_obj.sender.user_id), "",
                                   "撤回用户消息", user_id, "", f"撤回{success_count}条")
-                msg = f"✅ 已撤回用户 {user_id} 的 {success_count} 条消息\n"
-                if skipped_count > 0:
-                    msg += f"⏭️ 跳过: {skipped_count} 条\n"
+
+                msg = f"✅ 已撤回用户 {user_id} 的 {success_count} 条消息"
                 if failed_count > 0:
-                    msg += f"❌ 失败: {failed_count} 条"
+                    msg += f"\n⚠️ 失败: {failed_count} 条（可能是超过撤回时限）"
                 yield event.plain_result(msg.strip())
             else:
                 yield event.plain_result(f"❌ 撤回失败: {result.get('error', '未知错误')}")
         elif is_all or count > 1:
-            # 获取撤回命令本身的message_id，排除它
-            current_message_id = getattr(event.message_obj, "message_id", 0) or 0
-            # 如果是全部，或者有数量参数，就撤回最近的群消息（排除管理员和群主，包含机器人）
-            result = await recall_recent_messages(group_id, count, api_client, recall_time, bot=event.bot, exclude_admins=True, exclude_message_ids=[current_message_id])
-            if result.get("success"):
-                res = result.get("result", {})
+            # 撤回最近的群消息（排除管理员和群主）
+            result = await recall_recent_messages_by_api(event, count, exclude_admins=True)
+            if result.get("success") is not False:
+                res = result
                 success_count = res.get("success", 0)
-                skipped_count = res.get("skipped", 0)
                 failed_count = res.get("failed", 0)
-                skipped_admin = res.get("skipped_admin", 0)
+                total_messages = res.get("total", 0)
                 add_operation_log(group_id, str(event.message_obj.sender.user_id), "",
                                   "撤回所有消息", "all", "", f"撤回{success_count}条")
-                msg = f"✅ 已撤回最近的 {success_count} 条消息\n"
-                if skipped_count > 0:
-                    msg += f"⏭️ 跳过: {skipped_count} 条\n"
-                if skipped_admin > 0:
-                    msg += f"👑 跳过管理员/群主: {skipped_admin} 条\n"
+
+                msg = f"✅ 已撤回 {success_count} 条消息"
                 if failed_count > 0:
-                    msg += f"❌ 失败: {failed_count} 条"
+                    msg += f"\n⚠️ 失败: {failed_count} 条（可能是超过撤回时限）"
                 yield event.plain_result(msg.strip())
             else:
                 yield event.plain_result(f"❌ 撤回失败: {result.get('error', '未知错误')}")

@@ -182,7 +182,7 @@ from .recall import (
     parse_time_duration,
     recall_user_messages,
     recall_recent_messages,
-    get_group_admins_and_owner,
+    get_group_admins_and_owner_sync,
     cancel_all_self_recalls,
     get_pending_self_recalls
 )
@@ -444,7 +444,7 @@ __all__ = [
     "parse_time_duration",
     "recall_user_messages",
     "recall_recent_messages",
-    "get_group_admins_and_owner",
+    "get_group_admins_and_owner_sync",
     "cancel_all_self_recalls",
     "get_pending_self_recalls",
     "set_welcome_message",

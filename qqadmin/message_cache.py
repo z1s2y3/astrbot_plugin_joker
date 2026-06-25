@@ -7,6 +7,23 @@ from astrbot.api import logger
 from astrbot.core import get_astrbot_data_path
 
 
+def _safe_int(value, default=0):
+    """安全地将值转换为整数，失败时返回默认值（支持十进制和十六进制字符串）"""
+    if value is None:
+        return default
+    try:
+        return int(value)
+    except (ValueError, TypeError):
+        try:
+            if isinstance(value, str):
+                v = value.strip()
+                if v.startswith('0x') or v.startswith('0X'):
+                    return int(v, 16)
+        except (ValueError, TypeError):
+            pass
+        return default
+
+
 def get_plugin_data_path():
     data_path = Path(get_astrbot_data_path()) / "plugin_data" / "qqadmin"
     data_path.mkdir(parents=True, exist_ok=True)
@@ -106,7 +123,7 @@ class UserMessageCache:
         return None
 
     def get_all_messages(self) -> List[dict]:
-        return sorted(self.messages, key=lambda x: int(x.get("message_id", 0)), reverse=True)
+        return sorted(self.messages, key=lambda x: _safe_int(x.get("message_id", 0)), reverse=True)
 
     def recall_message(self, message_id):
         for msg in self.messages:
@@ -169,7 +186,7 @@ class GroupMessageCache:
                 except:
                     continue
 
-        all_messages.sort(key=lambda x: int(x.get("message_id", 0)), reverse=True)
+        all_messages.sort(key=lambda x: _safe_int(x.get("message_id", 0)), reverse=True)
         return all_messages[:limit]
 
     def recall_message(self, message_id, user_id: str = None, date_str: str = None):
@@ -194,12 +211,14 @@ def add_group_message(group_id: str, message_id, user_id: str, message: str, tim
     cache.add_message(message_id, user_id, message, timestamp)
 
 
-def get_user_cached_messages(group_id: str, user_id: str, date_str: str = None, limit: int = None) -> List[dict]:
+def get_user_cached_messages(group_id: str, user_id: str, date_str: str = None, limit: int = None, include_recalled: bool = False) -> List[dict]:
     """获取用户的消息（跨日期）"""
     if date_str:
         # 只获取指定日期的消息
         cache = GroupMessageCache(group_id)
         messages = cache.get_user_messages(user_id, date_str)
+        if not include_recalled:
+            messages = [m for m in messages if not m.get("recalled", False)]
         if limit:
             return messages[:limit]
         return messages
@@ -208,12 +227,12 @@ def get_user_cached_messages(group_id: str, user_id: str, date_str: str = None, 
         group_cache_dir = get_group_cache_dir(group_id)
         if not group_cache_dir.exists():
             return []
-        
+
         all_messages = []
         # 获取所有日期目录，按日期从新到旧排序
-        date_dirs = sorted([d for d in group_cache_dir.iterdir() if d.is_dir()], 
+        date_dirs = sorted([d for d in group_cache_dir.iterdir() if d.is_dir()],
                           key=lambda x: x.name, reverse=True)
-        
+
         for date_dir in date_dirs:
             user_file = date_dir / f"{user_id}.json"
             if user_file.exists():
@@ -223,10 +242,14 @@ def get_user_cached_messages(group_id: str, user_id: str, date_str: str = None, 
                         all_messages.extend(data.get("messages", []))
                 except:
                     continue
-        
-         # 按message_id从大到小排序（message_id是递增的，大的是最新的）
-        all_messages.sort(key=lambda x: int(x.get("message_id", 0)), reverse=True)
-        
+
+        # 按message_id从大到小排序（message_id是递增的，大的是最新的）
+        all_messages.sort(key=lambda x: _safe_int(x.get("message_id", 0)), reverse=True)
+
+        # 过滤已撤回的消息
+        if not include_recalled:
+            all_messages = [m for m in all_messages if not m.get("recalled", False)]
+
         if limit:
             return all_messages[:limit]
         return all_messages
@@ -247,23 +270,26 @@ def get_latest_cached_bot_message(group_id: str, bot_id: str) -> Optional[dict]:
     return None
 
 
-def get_recent_cached_messages(group_id: str, limit: int = 50, date_str: str = None) -> List[dict]:
+def get_recent_cached_messages(group_id: str, limit: int = 50, date_str: str = None, include_recalled: bool = False) -> List[dict]:
     """获取最近的缓存消息（跨日期）"""
     if date_str:
         # 只获取指定日期的消息
         cache = GroupMessageCache(group_id)
-        return cache.get_recent_messages(limit, date_str)
+        messages = cache.get_recent_messages(limit, date_str)
+        if not include_recalled:
+            messages = [m for m in messages if not m.get("recalled", False)]
+        return messages
     else:
         # 跨日期获取最近几天的消息
         group_cache_dir = get_group_cache_dir(group_id)
         if not group_cache_dir.exists():
             return []
-        
+
         all_messages = []
         # 获取所有日期目录，按日期从新到旧排序
-        date_dirs = sorted([d for d in group_cache_dir.iterdir() if d.is_dir()], 
+        date_dirs = sorted([d for d in group_cache_dir.iterdir() if d.is_dir()],
                           key=lambda x: x.name, reverse=True)
-        
+
         for date_dir in date_dirs:
             for f in date_dir.iterdir():
                 if f.is_file() and f.suffix == ".json":
@@ -273,10 +299,14 @@ def get_recent_cached_messages(group_id: str, limit: int = 50, date_str: str = N
                             all_messages.extend(data.get("messages", []))
                     except:
                         continue
-        
+
         # 按message_id从大到小排序（message_id是递增的，大的是最新的）
-        all_messages.sort(key=lambda x: int(x.get("message_id", 0)), reverse=True)
-        
+        all_messages.sort(key=lambda x: _safe_int(x.get("message_id", 0)), reverse=True)
+
+        # 过滤已撤回的消息
+        if not include_recalled:
+            all_messages = [m for m in all_messages if not m.get("recalled", False)]
+
         return all_messages[:limit]
 
 
@@ -285,7 +315,7 @@ def remove_group_message(group_id: str, message_id):
     group_cache_dir = get_group_cache_dir(group_id)
     if not group_cache_dir.exists():
         return
-    
+
     for date_dir in group_cache_dir.iterdir():
         if date_dir.is_dir():
             for f in date_dir.iterdir():
@@ -293,17 +323,65 @@ def remove_group_message(group_id: str, message_id):
                     try:
                         with open(f, 'r', encoding='utf-8') as fp:
                             data = json.load(fp)
-                        
+
                         original_count = len(data.get("messages", []))
                         data["messages"] = [
-                            msg for msg in data.get("messages", []) 
+                            msg for msg in data.get("messages", [])
                             if str(msg.get("message_id")) != str(message_id)
                         ]
-                        
+
                         if len(data["messages"]) != original_count:
                             with open(f, 'w', encoding='utf-8') as fp:
                                 json.dump(data, fp, ensure_ascii=False, indent=2)
                             return True
                     except Exception as e:
                         logger.error(f"删除消息缓存失败 {f}: {e}")
+    return False
+
+
+def mark_message_recalled(group_id: str, user_id: str, message_id: str):
+    """标记消息为已撤回状态"""
+    group_cache_dir = get_group_cache_dir(group_id)
+    if not group_cache_dir.exists():
+        return False
+
+    for date_dir in group_cache_dir.iterdir():
+        if date_dir.is_dir():
+            user_file = date_dir / f"{user_id}.json"
+            if user_file.exists():
+                try:
+                    with open(user_file, 'r', encoding='utf-8') as f:
+                        data = json.load(f)
+
+                    for msg in data.get("messages", []):
+                        if str(msg.get("message_id")) == str(message_id):
+                            msg["recalled"] = True
+                            msg["recalled_at"] = int(time.time())
+                            with open(user_file, 'w', encoding='utf-8') as f:
+                                json.dump(data, f, ensure_ascii=False, indent=2)
+                            return True
+                except Exception as e:
+                    logger.error(f"标记消息撤回状态失败 {user_file}: {e}")
+    return False
+
+
+def get_message_recall_status(group_id: str, user_id: str, message_id: str) -> bool:
+    """获取消息是否已被撤回"""
+    group_cache_dir = get_group_cache_dir(group_id)
+    if not group_cache_dir.exists():
+        return False
+
+    for date_dir in group_cache_dir.iterdir():
+        if date_dir.is_dir():
+            user_file = date_dir / f"{user_id}.json"
+            if user_file.exists():
+                try:
+                    with open(user_file, 'r', encoding='utf-8') as f:
+                        data = json.load(f)
+
+                    for msg in data.get("messages", []):
+                        if str(msg.get("message_id")) == str(message_id):
+                            return msg.get("recalled", False)
+                except:
+                    continue
     return False
