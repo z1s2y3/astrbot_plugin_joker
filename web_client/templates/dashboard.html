@@ -42,7 +42,7 @@
   <div>
     <div class="eyebrow">DASHBOARD</div>
     <h1>我的群管</h1>
-    <p class="muted">账号 {{ current_user.username }}{% if current_user.email %} · {{ current_user.email }}{% endif %}。管理已授权群的开关和群管功能。</p>
+    <p class="muted">账号 {{ current_user.username }}{% if current_user.email %} · {{ current_user.email }}{% endif %}</p>
   </div>
   <div class="hero-stat"><strong>{{ groups|length }}</strong><span>已绑定群</span></div>
 </section>
@@ -52,7 +52,6 @@
   <div class="section-heading">
     <div>
       <h2 id="sync-summary-title">同步状态</h2>
-      <p>配置保存后由 Windows AstrBot 拉取并应用。</p>
     </div>
     {% if request.app.state.settings.data_mode == 'remote' %}
     <form method="post" action="/user/sync-refresh" class="inline-form">
@@ -80,7 +79,6 @@
     {% endfor %}
   </div>
   {% else %}
-  <p class="sync-summary-success">已同步。新配置将在下一轮同步时应用。</p>
   {% endif %}
 </section>
 {% endif %}
@@ -112,7 +110,7 @@
 
 <div class="dashboard-columns">
   <section class="panel" id="license-claim">
-    <div class="section-heading"><div><h2>登记群聊</h2><p>可重复登记多个群。输入目标群已激活的卡密；卡密用于绑定群聊，网页登录使用账号密码。卡密删除或授权撤销后无法继续登录。</p></div></div>
+    <div class="section-heading"><div><h2>登记群聊</h2></div></div>
     <form method="post" action="/user/licenses/claim" class="form-stack">
       <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
       <label>群聊已激活卡密<input name="license_key" autocomplete="off" maxlength="96" required></label>
@@ -121,7 +119,7 @@
   </section>
 
   <section class="panel" id="account-security">
-    <div class="section-heading"><div><h2>账号安全</h2><p>修改密码后需重新登录。</p></div></div>
+    <div class="section-heading"><div><h2>账号安全</h2></div></div>
     <form method="post" action="/user/account/password" class="form-stack">
       <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
       <label>当前密码<input type="password" name="current_password" autocomplete="current-password" required></label>
@@ -133,7 +131,7 @@
 </div>
 
 <section class="panel audit-panel" id="recent-activity">
-  <div class="section-heading"><div><h2>最近操作</h2><p>网页操作记录。</p></div></div>
+  <div class="section-heading"><div><h2>最近操作</h2></div></div>
   <div class="table-wrap">
     <table>
       <thead><tr><th>时间</th><th>群号</th><th>操作</th><th>说明</th></tr></thead>

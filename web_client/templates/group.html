@@ -55,7 +55,7 @@
         <label>{{ field.label }}<input name="{{ field.key }}" value="{{ value }}" maxlength="{{ field.max_length }}" {% if field.default %}required{% endif %}>{% if field.help %}<small>{{ field.help }}</small>{% endif %}</label>
         {% endif %}
       {% endfor %}
-      <div class="form-submit-row"><small>只有提交此表单才会保存并等待 Windows 同步。</small><button class="button secondary" type="submit">保存{{ heading }}设置</button></div>
+      <div class="form-submit-row"><button class="button secondary" type="submit">保存{{ heading }}设置</button></div>
     </fieldset>
   </form>
   {% endif %}
@@ -186,7 +186,6 @@
   <div class="section-heading">
     <div>
       <h2 id="sync-flow-title">同步状态</h2>
-      <p>网页保存配置，Windows AstrBot 拉取并应用。Linux 不运行机器人。</p>
     </div>
   </div>
   <ol class="sync-flow-steps">
@@ -209,7 +208,6 @@
   </div>
   {% if request.app.state.settings.data_mode == 'remote' %}
   <div class="sync-flow-actions">
-    <small>配置保存后先确认群配置，再后台拉取对应 FTP 数据库；“刷新状态”只读取最新状态，不会重复提交配置。</small>
     <a class="button ghost small" href="{{ group_prefix }}/{{ group_id }}#sync-flow-title" data-sync-status-refresh>刷新状态</a>
     <form method="post" action="{{ group_prefix }}/{{ group_id }}/sync-refresh" data-sync-refresh-form>
       <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
@@ -221,7 +219,7 @@
 
 {% if global_defaults|default([]) %}
 <section class="panel management-panel group-section-panel" id="global-defaults" data-group-section-panel="global-defaults">
-  <div class="section-heading"><div><h2>全局群管默认配置</h2><p>以下是全局群管页面的默认值。本群可以单独覆盖；修改全局值后请在全局页面执行同步，才会覆盖已有分群。</p></div>{% if current_user.is_admin %}<a class="button ghost small" href="/admin/global">打开全局配置</a>{% endif %}</div>
+  <div class="section-heading"><div><h2>全局群管默认配置</h2></div>{% if current_user.is_admin %}<a class="button ghost small" href="/admin/global">打开全局配置</a>{% endif %}</div>
   <div class="summary-grid">
     {% for item in global_defaults %}<div><strong>{{ '已开启' if item.enabled else '已关闭' }}</strong><span>{{ item.label }}</span></div>{% endfor %}
   </div>
@@ -248,7 +246,6 @@
   <div class="section-heading">
     <div>
       <h2 id="integration-status-title">游戏与数据库通联</h2>
-      <p>游戏心跳、数据库快照和群管授权分别计状态；网页保存后由 Windows 拉取并执行。</p>
     </div>
     <span class="pill {{ 'active' if game_status.active else ('expired' if game_status.state == 'expired' else '') }}">
       {{ '游戏心跳有效' if game_status.active else ('游戏授权过期' if game_status.state == 'expired' else ('本地执行' if game_status.state == 'local' else '未建立游戏心跳')) }}
@@ -351,7 +348,7 @@
     {% if item['values'].get('enabled', false) %}{% set feature_counts.enabled = feature_counts.enabled + 1 %}{% endif %}
   {% endfor %}
   <div class="section-heading">
-    <div><h2 id="group-feature-overview-title">群功能总览</h2><p>点击功能名称进入对应设置；下方只显示本群实际生效的指令用法、可用用户和开关状态。</p></div>
+    <div><h2 id="group-feature-overview-title">群功能总览</h2></div>
     <span class="pill active">{{ feature_counts.enabled }} / {{ feature_counts.total }} 项已开启</span>
   </div>
   {% set feature_categories = [
@@ -376,7 +373,7 @@
     {% endfor %}
   </div>
   {% if action_features %}
-  <div class="section-heading compact-heading"><div><h3>统计操作功能</h3><p>这些功能共用“统计系统”开关，分别显示实际可用状态，网页不重复创建设置项。</p></div></div>
+  <div class="section-heading compact-heading"><div><h3>统计操作功能</h3></div></div>
   <div class="feature-summary-grid action-feature-summary-grid">
     {% for item in action_features %}
     <a class="feature-summary-item {{ 'is-enabled' if item.enabled else 'is-disabled' }}" href="#{{ item.section_id }}" data-group-section-switch="{{ item.section_id }}">
@@ -390,7 +387,7 @@
 
 <section class="panel group-command-summary" aria-labelledby="group-command-summary-title">
   <div class="section-heading">
-    <div><h2 id="group-command-summary-title">本群实际指令</h2><p>Windows 同步后按这里的名称执行；用法可直接复制，用户字段表示允许使用该指令的成员范围。</p></div>
+    <div><h2 id="group-command-summary-title">本群实际指令</h2></div>
     <span class="pill neutral">同步后生效</span>
   </div>
   {% if group_command_groups %}
@@ -413,7 +410,6 @@
   <div class="section-heading">
     <div>
       <h2 id="command-editor-title">编辑指令名称</h2>
-      <p>这里只修改可配置的指令名称；保存后会同步到 Windows，功能开关、参数和回复内容不变。</p>
     </div>
     <span class="pill neutral">保存后同步 Windows</span>
   </div>

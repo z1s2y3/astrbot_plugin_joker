@@ -10,7 +10,7 @@ from copy import deepcopy
 # remains available even on a freshly installed portal.
 UPDATE_LOG: tuple[dict[str, object], ...] = (
     {
-        "version": "1.11.403",
+        "version": "1.11.404",
         "date": "2026-10-26",
         "title": "修复点赞未落库却显示成功",
         "items": (
