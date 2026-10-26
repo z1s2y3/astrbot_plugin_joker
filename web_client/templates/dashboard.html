@@ -1,0 +1,150 @@
+{% extends "user_base.html" %}
+{% block title %}控制台 · {{ portal_name }}{% endblock %}
+{% block sidebar_extra %}
+{% if groups %}
+<section class="sidebar-section group-shortcuts" aria-label="已绑定群快捷入口">
+  <div class="sidebar-label">已绑定群 · {{ groups|length }}</div>
+  <nav class="sidebar-nav" aria-label="已绑定群">
+    {% for item in display_groups %}
+    {% if item.sync.status == 'unavailable' %}
+      {% set sync_class = 'is-error' %}{% set sync_label = '本地缺群' %}
+    {% elif item.sync.status in ['protected', 'partial'] %}
+      {% set sync_class = 'is-error' %}{% set sync_label = '数据保护' %}
+    {% elif item.sync.status == 'error' %}
+      {% set sync_class = 'is-error' %}{% set sync_label = '需重试' %}
+    {% elif item.sync.pending %}
+      {% set sync_class = 'is-pending' %}{% set sync_label = '待应用' %}
+    {% elif item.sync.refresh_requested %}
+      {% set sync_class = 'is-refresh' %}{% set sync_label = '待上传' %}
+    {% elif item.sync.online %}
+      {% set sync_class = 'is-online' %}{% set sync_label = '在线' %}
+    {% else %}
+      {% set sync_class = 'is-offline' %}{% set sync_label = '离线' %}
+    {% endif %}
+    <a class="sidebar-link group-shortcut" href="/user/groups/{{ item.access.group_id }}" title="进入 {{ item.group_display_name|default('群 ' ~ item.access.group_id) }} 配置">
+      <span class="sidebar-group-id">{{ item.group_display_name|default('群 ' ~ item.access.group_id) }}</span>
+      <span class="sidebar-sync {{ sync_class }}">{{ item.sync.badge|default(sync_label) }}</span>
+    </a>
+    {% endfor %}
+  </nav>
+</section>
+{% endif %}
+{% endblock %}
+{% block content %}
+{% set sync_summary = namespace(online=0, pending=0, refresh=0, errors=0, offline=0) %}
+{% for item in groups %}
+  {% if item.sync.online %}{% set sync_summary.online = sync_summary.online + 1 %}{% else %}{% set sync_summary.offline = sync_summary.offline + 1 %}{% endif %}
+  {% if item.sync.pending %}{% set sync_summary.pending = sync_summary.pending + 1 %}{% endif %}
+  {% if item.sync.refresh_requested %}{% set sync_summary.refresh = sync_summary.refresh + 1 %}{% endif %}
+  {% if item.sync.status in ['error', 'unavailable', 'protected', 'partial'] %}{% set sync_summary.errors = sync_summary.errors + 1 %}{% endif %}
+{% endfor %}
+<section class="hero compact">
+  <div>
+    <div class="eyebrow">DASHBOARD</div>
+    <h1>我的群管</h1>
+    <p class="muted">账号 {{ current_user.username }}{% if current_user.email %} · {{ current_user.email }}{% endif %}。管理已授权群的开关和群管功能。</p>
+  </div>
+  <div class="hero-stat"><strong>{{ groups|length }}</strong><span>已绑定群</span></div>
+</section>
+
+{% if groups %}
+<section class="panel sync-summary" id="sync-summary" aria-labelledby="sync-summary-title">
+  <div class="section-heading">
+    <div>
+      <h2 id="sync-summary-title">同步状态</h2>
+      <p>配置保存后由 Windows AstrBot 拉取并应用。</p>
+    </div>
+    {% if request.app.state.settings.data_mode == 'remote' %}
+    <form method="post" action="/user/sync-refresh" class="inline-form">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <button class="button ghost small" type="submit">请求同步全部分群</button>
+    </form>
+    {% endif %}
+  </div>
+  <div class="sync-summary-grid" aria-label="同步状态汇总">
+    <div class="sync-summary-stat is-online"><strong>{{ sync_summary.online }}</strong><span>电脑在线</span></div>
+    <div class="sync-summary-stat is-pending"><strong>{{ sync_summary.pending }}</strong><span>等待应用</span></div>
+    <div class="sync-summary-stat is-refresh"><strong>{{ sync_summary.refresh }}</strong><span>等待补传</span></div>
+    <div class="sync-summary-stat {{ 'is-error' if sync_summary.errors else 'is-offline' }}"><strong>{{ sync_summary.errors if sync_summary.errors else sync_summary.offline }}</strong><span>{{ '需要重试' if sync_summary.errors else '电脑离线' }}</span></div>
+  </div>
+  {% if sync_summary.pending or sync_summary.refresh or sync_summary.errors or sync_summary.offline %}
+  <div class="sync-summary-list" aria-label="需要关注的群同步状态">
+    {% for item in groups %}
+      {% if item.sync.status in ['error', 'unavailable', 'protected', 'partial'] or item.sync.pending or item.sync.refresh_requested or not item.sync.online %}
+      <a class="sync-summary-row" href="/user/groups/{{ item.access.group_id }}">
+        <span class="sync-summary-group">{{ item.group_display_name|default('群 ' ~ item.access.group_id) }}<small>QQ {{ item.access.group_id }}</small></span>
+        <span class="sync-summary-text">{{ item.sync.display_text|default(item.sync.text) }}</span>
+        <span class="sync-summary-open">查看配置 →</span>
+      </a>
+      {% endif %}
+    {% endfor %}
+  </div>
+  {% else %}
+  <p class="sync-summary-success">已同步。新配置将在下一轮同步时应用。</p>
+  {% endif %}
+</section>
+{% endif %}
+
+<form method="get" class="list-filter-form group-list-filter" role="search">
+  <label>搜索我的群聊<input type="search" name="group_search" value="{{ group_search }}" maxlength="64" placeholder="输入群号"></label>
+  <div class="row-actions"><button class="button secondary small" type="submit">搜索</button>{% if group_search %}<a class="button ghost small" href="/user">清除</a>{% endif %}</div>
+</form>
+<p class="list-result-count">{% if group_search %}搜索“{{ group_search }}” · {% endif %}共 {{ group_pagination.total }} 个已绑定群</p>
+<section class="group-grid">
+  {% for item in display_groups %}
+  <a class="group-card" href="/user/groups/{{ item.access.group_id }}">
+    <div class="card-topline">
+      <span class="status-dot {{ 'online' if item.powered_on else 'offline' }}"></span>
+      <span>{{ '✅️ 已开机' if item.powered_on else '❌️ 已关机' }}</span>
+      <span class="pill {{ 'active' if item.auth.active else 'expired' }}">{{ '授权有效' if item.auth.active else ('授权待验证' if item.auth.state == 'unverified' else '授权过期') }}</span>
+      <span class="pill {{ 'active' if item.sync.online else 'expired' }}">{{ item.sync.badge|default('尚未连通') }}</span>
+    </div>
+    <h2>{{ item.group_display_name|default('群 ' ~ item.access.group_id) }}</h2>
+    <p class="muted">QQ 群 {{ item.access.group_id }}</p>
+    <p>{{ item.auth.expire_text }}</p>
+    <div class="card-meta"><span>{{ item.enabled_count }} 项功能已开启{% if item.sync.pending %} · 网页已保存{% endif %}</span><span>进入配置 →</span></div>
+  </a>
+  {% else %}
+    <div class="empty-state">暂无已绑定群。先在目标群激活卡密，再登记群聊。</div>
+  {% endfor %}
+</section>
+{% set pagination = group_pagination %}{% include "_pagination.html" %}
+
+<div class="dashboard-columns">
+  <section class="panel" id="license-claim">
+    <div class="section-heading"><div><h2>登记群聊</h2><p>可重复登记多个群。输入目标群已激活的卡密；卡密用于绑定群聊，网页登录使用账号密码。卡密删除或授权撤销后无法继续登录。</p></div></div>
+    <form method="post" action="/user/licenses/claim" class="form-stack">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <label>群聊已激活卡密<input name="license_key" autocomplete="off" maxlength="96" required></label>
+      <button class="button primary" type="submit">验证并登记群组</button>
+    </form>
+  </section>
+
+  <section class="panel" id="account-security">
+    <div class="section-heading"><div><h2>账号安全</h2><p>修改密码后需重新登录。</p></div></div>
+    <form method="post" action="/user/account/password" class="form-stack">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <label>当前密码<input type="password" name="current_password" autocomplete="current-password" required></label>
+      <label>新密码<input type="password" name="new_password" minlength="8" maxlength="128" autocomplete="new-password" required></label>
+      <label>确认新密码<input type="password" name="new_password_confirm" minlength="8" maxlength="128" autocomplete="new-password" required></label>
+      <button class="button secondary" type="submit">更新密码</button>
+    </form>
+  </section>
+</div>
+
+<section class="panel audit-panel" id="recent-activity">
+  <div class="section-heading"><div><h2>最近操作</h2><p>网页操作记录。</p></div></div>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>时间</th><th>群号</th><th>操作</th><th>说明</th></tr></thead>
+      <tbody>
+      {% for log in logs %}
+        <tr><td>{{ log.created_at.strftime('%m-%d %H:%M') }}</td><td>{{ log.group_id or '账号' }}</td><td>{{ log.action }}</td><td>{{ log.summary }}</td></tr>
+      {% else %}
+        <tr><td colspan="4" class="muted">暂无操作记录</td></tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+{% endblock %}

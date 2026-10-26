@@ -1,0 +1,30 @@
+# Joker portal Nginx template.  It deliberately contains no public domain.
+#
+# Run install.sh or joker-webctl --render-nginx to replace this template's
+# markers with the domain selected for this server.  Do not paste this
+# unrendered file into Nginx.
+
+server {
+    listen 80;
+    listen [::]:80;
+    server_name __JOKER_PORTAL_DOMAIN__;
+    server_tokens off;
+    client_max_body_size 82m;
+
+    # Reject a CDN/origin IP Host rather than redirecting a browser to it.
+    if ($host != __JOKER_PORTAL_DOMAIN__) {
+        return 444;
+    }
+
+    # This location remains available in the HTTP bootstrap configuration so
+    # Baota/Let's Encrypt can issue the certificate before HTTPS is enabled.
+    location ^~ /.well-known/acme-challenge/ {
+        root __JOKER_NGINX_SITE_ROOT__;
+        default_type text/plain;
+        try_files $uri =404;
+    }
+
+__JOKER_HTTP_ROUTE__
+}
+
+__JOKER_TLS_SERVER__

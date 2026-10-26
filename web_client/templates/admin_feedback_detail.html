@@ -1,0 +1,26 @@
+{% extends "admin_base.html" %}
+{% block title %}反馈 #{{ feedback.id }} · {{ portal_name }}{% endblock %}
+{% block content %}
+<a class="back-link" href="/admin/feedback">← 返回反馈列表</a>
+<section class="hero compact">
+  <div>
+    <div class="eyebrow">FEEDBACK #{{ feedback.id }}</div>
+    <h1>{{ feedback.subject }}</h1>
+    <p class="muted">{{ feedback.created_at.strftime('%Y-%m-%d %H:%M') }} · 用户 {{ reporter.username if reporter else ('#' ~ feedback.user_id) }}{% if feedback.group_id %} · 群 {{ feedback.group_id }}{% endif %} · {{ feedback_categories.get(feedback.category, feedback.category) }}</p>
+  </div>
+  <span class="pill {{ 'active' if feedback.status == 'resolved' else ('expired' if feedback.status == 'rejected' else '') }}">{{ feedback_statuses.get(feedback.status, feedback.status) }}</span>
+</section>
+<section class="panel">
+  <div class="section-heading"><div><h2>反馈内容</h2><p>完整内容仅在详情页显示。</p></div></div>
+  <div class="feedback-detail-content">{{ feedback.content }}</div>
+</section>
+<section class="panel">
+  <div class="section-heading"><div><h2>处理反馈</h2><p>{% if handler %}最近由 {{ handler.username }} 处理{% elif feedback.handled_at %}已处理{% else %}尚未处理{% endif %}</p></div></div>
+  <form method="post" action="/admin/feedback/{{ feedback.id }}" class="form-stack">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <label>处理状态<select name="status">{% for key, label in feedback_statuses.items() %}<option value="{{ key }}"{% if feedback.status == key %} selected{% endif %}>{{ label }}</option>{% endfor %}</select></label>
+    <label>处理意见<textarea name="admin_reply" rows="8" maxlength="8000" placeholder="填写解决办法、预计处理时间或拒绝原因">{{ feedback.admin_reply }}</textarea></label>
+    <div class="form-actions"><button class="button primary" type="submit">保存处理结果</button></div>
+  </form>
+</section>
+{% endblock %}

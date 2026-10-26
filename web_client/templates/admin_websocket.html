@@ -1,0 +1,79 @@
+{% extends "admin_base.html" %}
+{% block title %}WebSocket 设置 · {{ portal_name }}{% endblock %}
+{% block content %}
+<div class="websocket-page">
+<a class="back-link" href="/admin">← 返回管理后台</a>
+<section class="group-hero">
+  <div>
+    <div class="eyebrow">GAME WEBSOCKET</div>
+    <h1>游戏 WebSocket</h1>
+    <div class="status-line"><span>Linux 配置中心</span><span>·</span><span>{{ status.connections|length }} 个 Windows 执行端在线</span></div>
+  </div>
+  <span class="pill {{ 'active' if websocket_settings.enabled and websocket_settings.game_websocket_enabled else 'expired' }}">{{ '连接已启用' if websocket_settings.enabled and websocket_settings.game_websocket_enabled else '连接未就绪' }}</span>
+</section>
+
+<div class="license-warning neutral"><strong>后台只配置两项</strong><span>填写 im3 网站和实际游戏插件的完整 WebSocket 链接即可。Linux-Windows 内部入口由网页自动生成并同步，用户端不填写地址、API Key 或入口令牌。</span></div>
+<div class="license-warning neutral"><strong>两种卡密分开验证</strong><span>用户输入主人生成的游戏授权卡密，决定是否能使用游戏功能；用户输入 im3 网站发放的网站卡密，只验证该外部网站连接。两者分别保存，Windows 实际执行游戏时仍会检查主人游戏授权心跳。</span></div>
+
+<form method="post" action="/admin/websocket" class="settings-form websocket-settings-form">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+  <section class="panel management-panel websocket-config-section">
+    <div class="section-heading"><div><h2>小程序 Socket.IO 网站</h2><p>这里只填写网站根地址、Socket.IO 路径和机器人身份。默认入口为 <code>https://im3.vipscum.cn</code> + <code>/socket.io/</code>；不要把完整接口地址或用户卡密填到网站地址中。</p></div><span class="pill {{ 'active' if im3_settings.enabled else 'expired' }}">{{ '已启用' if im3_settings.enabled else '未启用' }}</span></div>
+    <fieldset>
+      <label class="switch-row"><span><strong>启用小程序网站连接</strong><small>只影响小程序 Socket.IO 消息总线，不会替代下方的游戏执行 WebSocket。</small></span><input type="hidden" name="im3_enabled" value="off"><input type="checkbox" name="im3_enabled" value="on" {% if im3_settings.enabled %}checked{% endif %}></label>
+      <div class="form-grid two">
+        <label>网站根地址<input name="im3_server_url" value="{{ im3_settings.server_url }}" maxlength="2048" placeholder="https://im3.vipscum.cn" required><small>只填域名，不要追加 /socket.io 或查询参数。</small></label>
+        <label>Socket.IO 路径<input name="im3_socketio_path" value="{{ im3_settings.socketio_path }}" maxlength="128" placeholder="/socket.io/" required><small>默认填写 /socket.io/，保存时会自动补最后的斜杠。</small></label>
+        <label>机器人身份<input name="im3_bot_type" value="{{ im3_settings.bot_type }}" maxlength="128" required><small>主机器人填写 bot_main；副机器人填写完整 bot_child_机器标识。</small></label>
+      </div>
+      <div class="form-submit-row"><small>此按钮会先保存本段配置，再检测 Socket.IO WebSocket 传输层；它不验证用户卡密。用户卡密必须在对应群详情页单独验证。</small><button class="button secondary" name="operation" value="test_im3" formnovalidate type="submit">保存并检测 im3</button></div>
+    </fieldset>
+  </section>
+  <section class="panel management-panel websocket-config-section">
+    <div class="section-heading"><div><h2>Windows 游戏通道（自动配置）</h2><p>此入口不需要手动填写。后台保存时会自动使用当前网页地址、固定路径和随机入口令牌。</p></div><span class="pill {{ 'active' if websocket_settings.game_websocket_token_configured else 'expired' }}">{{ '入口已自动生成' if websocket_settings.game_websocket_token_configured else '保存后自动生成' }}</span></div>
+    <fieldset>
+      <div class="config-example">Windows 连接地址：{{ websocket_endpoint }}
+固定 WebSocket 路径：/api/sync/v1/ws
+游戏入口令牌：{{ '已加密保存并随认证同步下发' if websocket_settings.game_websocket_token_configured else '保存本页后自动生成' }}
+网页同步令牌：只需在 Linux 环境变量 JOKER_WEB_SYNC_TOKEN 与 Windows web_sync.sync_token 配对
+用户端：只验证游戏心跳卡和 im3 网站卡密，不接触以上配置</div>
+      <div class="license-warning neutral"><strong>首次通联仍需配对同步令牌</strong><span>这是 Windows 主动访问 Linux 网页的 HTTPS 安全凭据，不是用户卡密，也不是游戏插件 API Key。它需要在 Windows 初始插件配置中填写一次，后台页面不再重复要求填写。</span></div>
+    </fieldset>
+  </section>
+
+  <section class="panel management-panel websocket-config-section">
+    <div class="section-heading"><div><h2>运行开关与连接策略</h2><p>两个开关都开启时，Windows 才会连接并接收游戏调用。</p></div><span class="pill {{ 'active' if websocket_settings.game_websocket_enabled else 'expired' }}">{{ '游戏通道开启' if websocket_settings.game_websocket_enabled else '游戏通道关闭' }}</span></div>
+    <fieldset>
+      <label class="switch-row"><span><strong>启用网页 WebSocket 接入</strong><small>关闭后所有 Windows 执行端都会被拒绝连接。</small></span><input type="hidden" name="enabled" value="off"><input type="checkbox" name="enabled" value="on" {% if websocket_settings.enabled %}checked{% endif %}></label>
+      <label class="switch-row"><span><strong>启用 Windows 游戏 WebSocket</strong><small>开启后，群组中选择 WebSocket 的签到和游戏指令才会执行。</small></span><input type="hidden" name="game_websocket_enabled" value="off"><input type="checkbox" name="game_websocket_enabled" value="on" {% if websocket_settings.game_websocket_enabled %}checked{% endif %}></label>
+      <div class="form-grid two">
+        <label>最大 Windows 执行端数量<input type="number" name="max_clients" min="1" max="256" value="{{ websocket_settings.max_clients }}" required><small>同一客户端 ID 重连时旧连接会被替换。</small></label>
+        <label>单次调用超时（秒）<input type="number" name="call_timeout" min="0.1" max="120" step="0.1" value="{{ websocket_settings.call_timeout }}" required><small>范围 0.1-120 秒。</small></label>
+      </div>
+    </fieldset>
+  </section>
+
+ <section class="panel management-panel websocket-config-section">
+    <div class="section-heading"><div><h2>默认游戏插件 WebSocket</h2><p>这是实际 SCUM 插件网关，不是上面的网页连接入口。没有匹配本群服务器档案时使用。</p></div><span class="pill neutral">Linux 保存，Windows 执行</span></div>
+    <fieldset>
+      <label class="switch-row"><span><strong>启用默认游戏插件连接</strong><small>只作为没有分群服务器档案时的回退连接。</small></span><input type="hidden" name="game_executor_enabled" value="off"><input type="checkbox" name="game_executor_enabled" value="on" {% if websocket_settings.game_executor.enabled %}checked{% endif %}></label>
+      <div class="form-grid two">
+        <label>连接超时（秒）<input type="number" name="game_executor_timeout_seconds" min="1" max="30" step="0.1" value="{{ websocket_settings.game_executor.timeout_seconds }}" required></label>
+      </div>
+      <label>插件 WebSocket 完整链接<input type="password" name="game_executor_websocket_url" autocomplete="new-password" maxlength="2048" placeholder="{% if websocket_settings.game_executor_api_key_configured %}{{ websocket_settings.game_executor_display_url }}（留空保留）{% else %}ws://127.0.0.1:28016/ws?apiKey=你的插件密钥{% endif %}"><small>必须完整填写开发文档格式：<code>ws://游戏主机:端口/ws?apiKey=插件APIKey</code> 或 <code>wss://...</code>。这里的 <code>apiKey</code> 是游戏插件密钥，不是网页同步令牌、游戏入口令牌，也不是 im3 卡密。</small></label>
+      <div class="form-submit-row"><small>这是后台唯一需要填写的游戏连接。保存并检测会让在线 Windows 执行端按文档执行 <code>GET /ping</code>，直接验证这条链接和 API Key。</small><button class="button secondary" name="operation" value="test_executor" formnovalidate type="submit">保存并检测实际插件</button></div>
+      <div class="license-warning neutral"><strong>多台服务器</strong><span>每个群的“游戏服务器”可单独添加多个文档 WebSocket 链接并关联各自的 FTP/SQLite 数据库。这里不再保存或执行 RCON。</span></div>
+    </fieldset>
+  </section>
+
+  <div class="form-submit-row websocket-save-row"><small>内部网页入口会自动保存并使用固定路径；“保存并检测实际插件”用于验证真正连接的游戏插件。</small><button class="button secondary" name="operation" value="test_portal" formnovalidate type="submit">保存并检测 Windows 通道</button><button class="button primary" type="submit">保存全部 WebSocket 设置</button></div>
+</form>
+
+<section class="panel management-panel">
+  <div class="section-heading"><div><h2>在线执行端</h2><p>只显示连接状态和能力，不显示令牌或密码。</p></div></div>
+  {% if status.connections %}
+  <div class="table-wrap"><table><thead><tr><th>客户端</th><th>连接时间</th><th>等待请求</th><th>游戏执行器</th><th>能力</th></tr></thead><tbody>{% for connection in status.connections %}<tr><td data-label="客户端" class="wrap-anywhere">{{ connection.client_id }}</td><td data-label="连接时间" class="wrap-anywhere">{{ connection.connected_at }}</td><td data-label="等待请求">{{ connection.pending }}</td><td data-label="游戏执行器">{% if 'plugin_websocket' in connection.capabilities %}<span class="pill active">插件 WebSocket 已配置</span>{% else %}<span class="pill expired">未配置</span>{% endif %}</td><td data-label="能力" class="wrap-anywhere">{{ connection.capabilities|join(', ') or '旧版默认能力' }}</td></tr>{% endfor %}</tbody></table></div>
+  {% else %}<p class="empty-state">暂无在线 Windows 执行端。请确认 Windows 的网页地址和 <code>web_sync.sync_token</code> 与 Linux 的 <code>JOKER_WEB_SYNC_TOKEN</code> 完全一致；游戏入口令牌由网页同步下发，不要手工混用。</p>{% endif %}
+</section>
+</div>
+{% endblock %}

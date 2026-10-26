@@ -1,0 +1,44 @@
+{% extends "admin_base.html" %}
+{% block title %}全局配置 · {{ portal_name }}{% endblock %}
+{% block sidebar_extra %}
+<section class="sidebar-section global-sidebar-nav" aria-label="全局配置导航">
+  <div class="sidebar-label">全局设置</div>
+  <nav class="sidebar-nav" aria-label="全局设置">
+    <a class="sidebar-link" href="#global-general">基础设置</a>
+    {% for item in features %}<a class="sidebar-link" href="#global-{{ item.spec.key }}">{{ item.spec.label }}</a>{% endfor %}
+  </nav>
+</section>
+{% endblock %}
+{% block content %}
+<a class="back-link" href="/admin">← 返回管理后台</a>
+<section class="group-hero">
+  <div><div class="eyebrow">GLOBAL CONFIGURATION</div><h1>群管全局配置</h1><div class="status-line"><span>{{ group_count }} 个分群记录</span><span>·</span><span>配置版本 {{ updated_at or '未知' }}</span></div></div>
+  <form method="post" action="/admin/global/sync"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button class="button primary">立即同步到全部分群</button></form>
+</section>
+<div class="license-warning neutral"><strong>全局默认值</strong><span>编辑公开群管配置，不含授权密钥和主人账号。全局同步会覆盖分群功能默认值，保留运行数据。</span></div>
+
+<section class="panel management-panel" id="global-general">
+  <div class="section-heading"><div><h2>全局基础设置</h2><p>控制群管总开关、配置同步与开关机提示。</p></div></div>
+  <form method="post" action="/admin/global/general" class="settings-form"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><fieldset>
+  {% for item in general_fields %}{% set field = item.spec %}{% set value = general_values.get(field.key, field.default) %}
+    {% if field.kind == 'bool' %}<label class="switch-row"><span><strong>{{ field.label }}</strong>{% if field.help %}<small>{{ field.help }}</small>{% endif %}</span><input type="checkbox" name="{{ field.key }}" value="on" {% if value %}checked{% endif %}></label>
+    {% else %}<label>{{ field.label }}<textarea name="{{ field.key }}" rows="2" maxlength="{{ field.max_length }}">{{ value }}</textarea>{% if field.help %}<small>{{ field.help }}</small>{% endif %}</label>{% endif %}
+  {% endfor %}
+  <button class="button secondary" type="submit">保存全局基础设置</button></fieldset></form>
+</section>
+
+<section><div class="section-heading"><div><h2>全局功能默认值</h2><p>用于新群初始化和全局同步。</p></div></div><div class="feature-grid">
+{% for item in features %}<article class="feature-card" id="global-{{ item.spec.key }}">
+  <div class="feature-title"><div><h3>{{ item.spec.label }}</h3><p>{{ item.spec.description }}</p></div>{% if item['values'].get('enabled') %}<span class="pill active">✅️ 默认开启</span>{% else %}<span class="pill">❌️ 默认关闭</span>{% endif %}</div>
+  <form method="post" action="/admin/global/features/{{ item.spec.key }}" class="settings-form"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><fieldset>
+  {% for field in item.spec.fields if not field.group_only %}{% set value = item['values'].get(field.key, field.default) %}
+    {% if field.kind == 'bool' %}<label class="switch-row"><span><strong>{{ field.label }}</strong>{% if field.help %}<small>{{ field.help }}</small>{% endif %}</span><input type="checkbox" name="{{ field.key }}" value="on" {% if value %}checked{% endif %}></label>
+    {% elif field.kind == 'choice' %}<label>{{ field.label }}<select name="{{ field.key }}">{% for option_value, option_label in field.choices %}<option value="{{ option_value }}" {% if value == option_value %}selected{% endif %}>{{ option_label }}</option>{% endfor %}</select>{% if field.help %}<small>{{ field.help }}</small>{% endif %}</label>
+    {% elif field.kind in ['text', 'list'] %}<label>{{ field.label }}<textarea name="{{ field.key }}" rows="{{ 4 if field.kind == 'list' else 3 }}" maxlength="{{ field.max_length }}">{{ display_value(field, value) }}</textarea>{% if field.help %}<small>{{ field.help }}</small>{% endif %}</label>
+    {% elif field.kind == 'int' %}<label>{{ field.label }}<input type="number" name="{{ field.key }}" value="{{ value }}" min="{{ field.minimum }}" max="{{ field.maximum }}" required>{% if field.help %}<small>{{ field.help }}</small>{% endif %}</label>
+    {% else %}<label>{{ field.label }}<input name="{{ field.key }}" value="{{ value }}" maxlength="{{ field.max_length }}" required>{% if field.help %}<small>{{ field.help }}</small>{% endif %}</label>{% endif %}
+  {% endfor %}
+  <button class="button secondary wide" type="submit">保存全局{{ item.spec.label }}</button></fieldset></form>
+</article>{% endfor %}
+</div></section>
+{% endblock %}

@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark light">
+  <title>{% block title %}{{ portal_name }}{% endblock %}</title>
+  {# Keep this URL relative to the public HTTPS site. FastAPI's url_for() can
+     otherwise generate an internal http://127.0.0.1:8765 address behind a
+     reverse proxy, causing browsers to block the stylesheet as mixed content. #}
+  <link rel="stylesheet" href="/static/app.css?v={{ static_asset_version }}">
+  <script defer src="/static/app.js?v={{ static_asset_version }}"></script>
+</head>
+<body data-theme-mode="{{ theme.mode }}" data-theme-day="{{ theme.day_url }}" data-theme-night="{{ theme.night_url }}">
+  <div class="theme-background" aria-hidden="true"></div>
+  <header class="topbar">
+    <a class="brand" href="{{ '/admin' if current_user and current_user.is_admin else '/user' }}"><span>J</span>{{ portal_name }}</a>
+    {% if current_user %}
+    <nav class="session-actions" aria-label="账户操作">
+      <span class="account">{{ current_user.username }}</span>
+      <form method="post" action="{{ '/admin/logout' if current_user and current_user.is_admin else '/user/logout' }}" class="inline-form">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <button class="button ghost small" type="submit">退出</button>
+      </form>
+    </nav>
+    {% endif %}
+  </header>
+
+  {% if current_user %}
+  <div class="app-layout">
+    <aside class="sidebar" aria-label="主导航">
+      <nav class="sidebar-nav">
+        {% if current_user.is_admin %}
+        <a class="sidebar-link{% if request.url.path == '/admin' %} active{% endif %}" href="/admin"{% if request.url.path == '/admin' %} aria-current="page"{% endif %}>管理后台</a>
+        <a class="sidebar-link{% if request.url.path == '/admin/licenses' %} active{% endif %}" href="/admin/licenses"{% if request.url.path == '/admin/licenses' %} aria-current="page"{% endif %}>卡密管理</a>
+        <a class="sidebar-link{% if request.url.path == '/admin/email' %} active{% endif %}" href="/admin/email"{% if request.url.path == '/admin/email' %} aria-current="page"{% endif %}>邮箱设置</a>
+        <a class="sidebar-link{% if request.url.path == '/admin/deployment' %} active{% endif %}" href="/admin/deployment"{% if request.url.path == '/admin/deployment' %} aria-current="page"{% endif %}>执行端</a>
+        <a class="sidebar-link{% if request.url.path == '/admin/update' %} active{% endif %}" href="/admin/update"{% if request.url.path == '/admin/update' %} aria-current="page"{% endif %}>网页更新</a>
+        {% if request.app.state.settings.data_mode != 'remote' %}
+        <a class="sidebar-link{% if request.url.path == '/admin/global' %} active{% endif %}" href="/admin/global"{% if request.url.path == '/admin/global' %} aria-current="page"{% endif %}>全局设置</a>
+        {% endif %}
+        <a class="sidebar-link{% if request.url.path == '/admin/appearance' %} active{% endif %}" href="/admin/appearance"{% if request.url.path == '/admin/appearance' %} aria-current="page"{% endif %}>外观</a>
+        {% else %}
+        <a class="sidebar-link{% if request.url.path in ['/user', '/user/dashboard'] %} active{% endif %}" href="/user"{% if request.url.path in ['/user', '/user/dashboard'] %} aria-current="page"{% endif %}>我的群组</a>
+        <a class="sidebar-link{% if request.url.path == '/user/appearance' %} active{% endif %}" href="/user/appearance"{% if request.url.path == '/user/appearance' %} aria-current="page"{% endif %}>外观</a>
+        {% endif %}
+      </nav>
+      {% if current_user.is_admin %}
+      <section class="sidebar-section admin-sidebar-nav" aria-label="后台数据导航">
+        <div class="sidebar-label">后台数据</div>
+        <nav class="sidebar-nav" aria-label="后台数据">
+          <a class="sidebar-link{% if request.url.path == '/admin/users' or request.url.path.startswith('/admin/users/') %} active{% endif %}" href="/admin/users"{% if request.url.path == '/admin/users' or request.url.path.startswith('/admin/users/') %} aria-current="page"{% endif %}>用户管理</a>
+          <a class="sidebar-link{% if request.url.path == '/admin/groups' or request.url.path.startswith('/admin/groups/') %} active{% endif %}" href="/admin/groups"{% if request.url.path == '/admin/groups' or request.url.path.startswith('/admin/groups/') %} aria-current="page"{% endif %}>全部分群</a>
+          <a class="sidebar-link{% if request.url.path == '/admin/logs' %} active{% endif %}" href="/admin/logs"{% if request.url.path == '/admin/logs' %} aria-current="page"{% endif %}>后台操作日志</a>
+        </nav>
+      </section>
+      {% endif %}
+      {% block sidebar_extra %}{% endblock %}
+    </aside>
+  {% endif %}
+
+  <main class="page {% block page_class %}{% endblock %}">
+    {% for flash in flashes %}
+      <div class="flash {{ flash.category }}">{{ flash.message }}</div>
+    {% endfor %}
+    {% block content %}{% endblock %}
+  </main>
+
+  {% if current_user %}
+  </div>
+  {% endif %}
+
+  <footer>Joker 群管客户中心 · {{ current_year }}</footer>
+</body>
+</html>

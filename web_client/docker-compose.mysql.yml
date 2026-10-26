@@ -1,0 +1,26 @@
+services:
+  mysql:
+    image: mysql:8.4
+    container_name: joker-portal-mysql
+    restart: unless-stopped
+    environment:
+      MYSQL_DATABASE: ${JOKER_WEB_MYSQL_DATABASE:-joker_portal}
+      MYSQL_USER: ${JOKER_WEB_MYSQL_USER:-joker_web}
+      MYSQL_PASSWORD: ${JOKER_WEB_MYSQL_PASSWORD:?请设置 JOKER_WEB_MYSQL_PASSWORD}
+      MYSQL_ROOT_PASSWORD: ${JOKER_WEB_MYSQL_ROOT_PASSWORD:?请设置 JOKER_WEB_MYSQL_ROOT_PASSWORD}
+      TZ: Asia/Shanghai
+    command:
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_unicode_ci
+    ports:
+      - "127.0.0.1:${JOKER_WEB_MYSQL_PORT:-3306}:3306"
+    volumes:
+      - joker_portal_mysql:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  joker_portal_mysql:

@@ -1,0 +1,115 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Joker 网页首次安装配置</title>
+  <style>
+    :root { color-scheme: dark; font: 16px/1.5 system-ui, sans-serif; background:#101722; color:#edf3fb; }
+    body { margin:0; padding:24px; }
+    main { max-width:900px; margin:auto; }
+    section { background:#172334; border:1px solid #2d4058; border-radius:10px; padding:20px; margin:16px 0; }
+    h1 { margin-top:0; font-size:1.6rem; } h2 { font-size:1.1rem; margin-top:0; }
+    .grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(220px,1fr)); gap:12px; }
+    label { display:flex; flex-direction:column; gap:5px; color:#c4d3e5; }
+    input, select, textarea { box-sizing:border-box; width:100%; padding:10px; border:1px solid #45617f; border-radius:6px; background:#0d1622; color:#fff; }
+    small { color:#9fb1c5; } .actions { display:flex; gap:10px; flex-wrap:wrap; margin-top:16px; }
+    button { border:0; border-radius:6px; padding:10px 16px; cursor:pointer; background:#3178c6; color:#fff; font-weight:600; }
+    button.secondary { background:#3b4d63; } #output { min-height:230px; font-family:ui-monospace,monospace; }
+    .warning { color:#ffd28a; }
+  </style>
+</head>
+<body>
+<main>
+  <h1>Joker 网页首次安装配置</h1>
+  <p>只在首次部署或创建新的网页平台时使用。填写完成后下载 <code>joker-install.env</code>，在宝塔终端执行 <code>set -a; source joker-install.env; set +a; bash install.sh --non-interactive</code>。网页安装器会据此验证数据库并生成安全密钥；升级已有网页时不要重新生成或覆盖现有配置。</p>
+  <section>
+    <h2>网页与数据库</h2>
+    <div class="grid">
+      <label>公网域名<input id="domain" placeholder="panel.example.com"></label>
+      <label>网页监听端口（默认 8765）<input id="webPort" value="8765" inputmode="numeric"><small>宝塔安装器默认使用 127.0.0.1:8765；修改后需同步调整 systemd 与 Nginx。</small></label>
+      <label>MySQL 主机<input id="mysqlHost" value="127.0.0.1"></label>
+      <label>MySQL 端口<input id="mysqlPort" value="3306" inputmode="numeric"></label>
+      <label>数据库名<input id="mysqlDb" value="joker_portal"></label>
+      <label>数据库账号<input id="mysqlUser" value="joker_web"></label>
+      <label>数据库密码<input id="mysqlPassword" type="password" autocomplete="new-password"></label>
+      <label>数据模式<select id="dataMode"><option value="remote" selected>remote：Windows 执行端</option><option value="local">local：同机运行</option></select></label>
+    </div>
+  </section>
+  <section>
+    <h2>网页管理员与同步</h2>
+    <div class="grid">
+      <label>管理员账号<input id="adminUser" value="admin" autocomplete="username"></label>
+      <label>管理员密码<input id="adminPassword" type="password" autocomplete="new-password"></label>
+      <label>同步令牌<input id="syncToken" placeholder="留空则随机生成"></label>
+      <label>公网地址<input id="publicOrigin" placeholder="留空则使用域名自动生成"></label>
+    </div>
+    <p class="warning">密钥只在本机浏览器生成和下载，不会发送到网络。请把下载的文件设置为仅 root 可读。</p>
+  </section>
+  <section>
+    <h2>生成结果</h2>
+    <textarea id="output" readonly spellcheck="false"></textarea>
+    <div class="actions">
+      <button type="button" id="generate">生成配置</button>
+      <button type="button" class="secondary" id="download">下载网页 .env（手工安装用）</button>
+      <button type="button" class="secondary" id="downloadInstall">下载 joker-install.env</button>
+    </div>
+  </section>
+</main>
+<script>
+(() => {
+  const value = id => document.getElementById(id).value.trim();
+  const random = () => {
+    const bytes = new Uint8Array(32);
+    crypto.getRandomValues(bytes);
+    return Array.from(bytes, n => n.toString(16).padStart(2, "0")).join("");
+  };
+  const quote = value => JSON.stringify(value);
+  let envText = "", installText = "";
+  const generate = () => {
+    const domain = value("domain");
+    const sync = value("syncToken") || random();
+    const origin = value("publicOrigin") || (domain ? "https://" + domain : "");
+    const session = random(), pepper = random();
+    envText = [
+      "JOKER_WEB_MYSQL_HOST=" + quote(value("mysqlHost") || "127.0.0.1"),
+      "JOKER_WEB_MYSQL_PORT=" + quote(value("mysqlPort") || "3306"),
+      "JOKER_WEB_MYSQL_DATABASE=" + quote(value("mysqlDb") || "joker_portal"),
+      "JOKER_WEB_MYSQL_USER=" + quote(value("mysqlUser") || "joker_web"),
+      "JOKER_WEB_MYSQL_PASSWORD=" + quote(value("mysqlPassword")),
+      "JOKER_WEB_SESSION_SECRET=" + quote(session),
+      "JOKER_WEB_CARD_PEPPER=" + quote(pepper),
+      "JOKER_WEB_HOST=\"127.0.0.1\"",
+      "JOKER_WEB_PORT=" + quote(value("webPort") || "8765"),
+      "JOKER_WEB_DATA_MODE=" + quote(document.getElementById("dataMode").value),
+      "JOKER_WEB_SYNC_TOKEN=" + quote(sync),
+      "JOKER_WEB_PUBLIC_ORIGIN=" + quote(origin),
+      "JOKER_WEB_SECURE_COOKIES=\"true\"",
+      ""
+    ].join("\n");
+    installText = [
+      "JOKER_PORTAL_DOMAIN=" + quote(domain),
+      "JOKER_MYSQL_HOST=" + quote(value("mysqlHost") || "127.0.0.1"),
+      "JOKER_MYSQL_PORT=" + quote(value("mysqlPort") || "3306"),
+      "JOKER_MYSQL_DATABASE=" + quote(value("mysqlDb") || "joker_portal"),
+      "JOKER_MYSQL_USER=" + quote(value("mysqlUser") || "joker_web"),
+      "JOKER_MYSQL_PASSWORD=" + quote(value("mysqlPassword")),
+      "JOKER_ADMIN_USER=" + quote(value("adminUser") || "admin"),
+      "JOKER_ADMIN_PASSWORD=" + quote(value("adminPassword")),
+      ""
+    ].join("\n");
+    document.getElementById("output").value = envText;
+  };
+  const save = (name, text) => {
+    const link = document.createElement("a");
+    link.href = URL.createObjectURL(new Blob([text], {type:"text/plain;charset=utf-8"}));
+    link.download = name; link.click(); URL.revokeObjectURL(link.href);
+  };
+  document.getElementById("generate").addEventListener("click", generate);
+  document.getElementById("download").addEventListener("click", () => { if (!envText) generate(); save(".env", envText); });
+  document.getElementById("downloadInstall").addEventListener("click", () => { if (!installText) generate(); save("joker-install.env", installText); });
+  generate();
+})();
+</script>
+</body>
+</html>

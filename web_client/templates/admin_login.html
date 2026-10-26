@@ -1,0 +1,17 @@
+{% extends "admin_base.html" %}
+{% block title %}管理员登录 · {{ portal_name }}{% endblock %}
+{% block page_class %}auth-page{% endblock %}
+{% block content %}
+<section class="auth-card">
+  <div class="eyebrow">ADMIN CONSOLE</div>
+  <h1>登录管理后台</h1>
+  <p class="muted">管理员账号仅用于管理卡密、用户、分群和网站设置。客户账号不能进入此入口。</p>
+  <form method="post" action="/admin/login" class="form-stack">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <label>管理员账号<input name="username" autocomplete="username" maxlength="32" required autofocus></label>
+    <label>密码<input type="password" name="password" autocomplete="current-password" maxlength="128" required></label>
+    <button class="button primary wide" type="submit">登录后台</button>
+  </form>
+  <p class="auth-switch"><a href="/admin/forgot-password">忘记管理员密码</a></p>
+</section>
+{% endblock %}

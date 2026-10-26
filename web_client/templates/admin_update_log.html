@@ -1,0 +1,47 @@
+{% extends "admin_base.html" %}
+{% block title %}更新日志 · {{ portal_name }}{% endblock %}
+{% block content %}
+<a class="back-link" href="/admin/update">← 返回网页更新</a>
+<section class="hero compact">
+  <div><div class="eyebrow">RELEASE NOTES</div><h1>更新日志</h1><p class="muted">每个部署包随网页程序发布，便于核对本次更新包含的改动。</p></div>
+  <div class="hero-stat"><strong>{{ installed_release.version }}</strong><span>当前运行版本</span></div>
+</section>
+
+<section class="panel audit-panel">
+  <div class="section-heading"><div><h2>版本记录</h2><p>{{ installed_release.message }}</p></div></div>
+  <div class="item-list release-note-list">
+  {% for release in releases %}
+    <article class="list-item release-note">
+      <div>
+        <h3>v{{ release['version'] }} · {{ release['title'] }}</h3>
+        <p>{{ release['date'] }}</p>
+        <ul>
+        {% for item in release['items'] %}<li>{{ item }}</li>{% endfor %}
+        </ul>
+      </div>
+      <span class="pill {{ 'active' if installed_release.version == release['version'] else '' }}">{{ '当前版本' if installed_release.version == release['version'] else '历史记录' }}</span>
+    </article>
+  {% else %}
+    <div class="empty-state compact">当前部署包未提供更新记录。</div>
+  {% endfor %}
+  </div>
+</section>
+
+<section class="panel audit-panel">
+  <div class="section-heading"><div><h2>部署执行记录</h2><p>这里记录后台上传任务的最终状态，包含成功、失败和失败原因。</p></div></div>
+  <div class="item-list release-note-list">
+  {% for item in deployment_history %}
+    <article class="list-item release-note">
+      <div>
+        <h3>{{ item['release_version'] or '未验证版本' }} · {{ item['state'] }}</h3>
+        <p>{{ item['updated_at'] or '时间未知' }}{% if item['package'] %} · {{ item['package'] }}{% endif %}</p>
+        <p>{{ item['message'] }}</p>
+      </div>
+      <span class="pill {{ 'active' if item['state'] == 'success' else 'expired' if item['state'] == 'failed' else '' }}">{{ '成功' if item['state'] == 'success' else '失败' if item['state'] == 'failed' else item['state'] }}</span>
+    </article>
+  {% else %}
+    <div class="empty-state compact">暂无部署执行记录。</div>
+  {% endfor %}
+  </div>
+</section>
+{% endblock %}

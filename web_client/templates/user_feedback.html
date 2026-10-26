@@ -1,0 +1,52 @@
+{% extends "user_base.html" %}
+{% block title %}用户反馈 · {{ portal_name }}{% endblock %}
+{% block content %}
+<section class="hero compact">
+  <div>
+    <div class="eyebrow">CUSTOMER FEEDBACK</div>
+    <h1>用户反馈</h1>
+    <p class="muted">反馈网页、同步或群管问题。</p>
+  </div>
+  <div class="hero-stat"><strong>{{ feedback_items|length }}</strong><span>我的反馈</span></div>
+</section>
+
+<section class="panel">
+  <div class="section-heading"><div><h2>提交反馈</h2><p>请勿填写密码、卡密原文等敏感信息。</p></div></div>
+  <form method="post" action="/user/feedback" class="form-stack">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <div class="form-grid three">
+      <label>反馈分类
+        <select name="category" required>
+          {% for key, label in feedback_categories.items() %}<option value="{{ key }}">{{ label }}</option>{% endfor %}
+        </select>
+      </label>
+      <label>相关群聊（可选）
+        <select name="group_id">
+          <option value="">网页整体 / 未指定</option>
+          {% for group in groups %}<option value="{{ group.group_id }}">{{ group.group_id }}</option>{% endfor %}
+        </select>
+      </label>
+      <label>主题<input name="subject" maxlength="160" required placeholder="例如：保存群配置时提示超时"></label>
+    </div>
+    <label>详细内容<textarea name="content" rows="7" maxlength="8000" required placeholder="请描述复现步骤、出现时间和页面提示；可以附上脱敏后的错误日志。"></textarea><small>最多 8000 个字符。</small></label>
+    <button class="button primary" type="submit">提交反馈</button>
+  </form>
+</section>
+
+<section class="panel">
+  <div class="section-heading"><div><h2>反馈记录</h2><p>查看处理状态和回复。</p></div></div>
+  <div class="feedback-list">
+  {% for item in feedback_items %}
+    <article class="feedback-card">
+      <div class="feedback-card-head">
+        <div><strong><a href="/user/feedback/{{ item.id }}">#{{ item.id }} · {{ item.subject }}</a></strong><small>{{ item.created_at.strftime('%Y-%m-%d %H:%M') }}{% if item.group_id %} · 群 {{ item.group_id }}{% endif %} · {{ feedback_categories.get(item.category, item.category) }}</small></div>
+        <span class="pill {{ 'active' if item.status == 'resolved' else ('expired' if item.status == 'rejected' else '') }}">{{ feedback_statuses.get(item.status, item.status) }}</span>
+      </div>
+      <p class="feedback-content">{{ item.content[:180] }}{% if item.content|length > 180 %}…{% endif %}</p>
+      <a class="button ghost small" href="/user/feedback/{{ item.id }}">查看详情</a>
+    </article>
+  {% else %}<div class="empty-state compact">还没有反馈记录。</div>{% endfor %}
+  </div>
+  {% set pagination = feedback_pagination %}{% include "_pagination.html" %}
+</section>
+{% endblock %}

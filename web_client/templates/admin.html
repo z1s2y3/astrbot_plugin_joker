@@ -1,0 +1,70 @@
+{% extends "admin_base.html" %}
+{% block title %}管理后台 · {{ portal_name }}{% endblock %}
+{% block content %}
+<section class="hero compact">
+  <div><div class="eyebrow">GROUP MANAGEMENT</div><h1>群管后台</h1><p class="muted">卡密、分群配置、群管日志和全局功能。</p></div>
+  <div class="row-actions"><a class="button primary" href="/admin/groups">管理分群</a><a class="button secondary" href="/admin/licenses">管理卡密</a><a class="button secondary" href="/admin/global-blacklist">全局黑名单</a>{% if request.app.state.settings.data_mode != 'remote' %}<a class="button secondary" href="/admin/global">全局功能</a>{% endif %}</div>
+</section>
+
+{% if request.app.state.settings.data_mode == 'remote' %}
+<div class="license-warning neutral"><strong>Windows 机器人执行群管</strong><span>网页保存配置，Windows 上线后自动应用；网页不运行机器人。</span></div>
+{% endif %}
+
+{% if runner.linux_migration_prepared %}
+<div class="license-warning neutral"><strong>Linux 执行端预留已开启</strong><span>当前仍由 Windows 机器人执行。</span></div>
+{% endif %}
+
+<section class="admin-workflow" aria-label="使用流程">
+  <div class="workflow-intro"><span class="eyebrow">GROUP TOOLS</span><strong>常用群管操作</strong><small>选择分群后单独保存功能。</small></div>
+  <div class="workflow-step"><span>1</span><div><strong>发放卡密</strong><small>设置授权天数和数量。</small></div></div>
+  <div class="workflow-step"><span>2</span><div><strong>打开分群</strong><small>开关审核、撤回、欢迎、过滤等功能。</small></div></div>
+  <div class="workflow-step"><span>3</span><div><strong>添加规则</strong><small>自动回复、定时消息和分群管理员。</small></div></div>
+</section>
+
+<section class="admin-stats">
+  <div><strong>{{ stats.users }}</strong><span>用户总数</span></div>
+  <div><strong>{{ stats.active_users }}</strong><span>有效用户</span></div>
+  <div><strong>{{ stats.admins }}</strong><span>管理员</span></div>
+  <div><strong>{{ stats.groups }}</strong><span>分群记录</span></div>
+  <div><strong>{{ stats.active_auth }}</strong><span>有效授权</span></div>
+</section>
+
+<section class="quick-action-grid" aria-label="后台快捷入口">
+  <a href="/admin/licenses" class="quick-action featured"><span class="quick-action-icon">＋</span><span><strong>群授权卡密</strong><small>生成、查看和删除卡密</small></span></a>
+  <a href="/admin/groups" class="quick-action"><span class="quick-action-icon">#</span><span><strong>群管分群</strong><small>开机、授权、功能和同步</small></span></a>
+  <a href="/admin/global-blacklist" class="quick-action featured"><span class="quick-action-icon">!</span><span><strong>全局黑名单</strong><small>新增、临时封禁和解除全局拉黑</small></span></a>
+  <a href="/admin/users" class="quick-action"><span class="quick-action-icon">◎</span><span><strong>用户账号</strong><small>账号、密码和分群归属</small></span></a>
+  <a href="/admin/email" class="quick-action"><span class="quick-action-icon">✉</span><span><strong>邮箱设置</strong><small>配置 SMTP、验证码和测试邮件</small></span></a>
+  <a href="/admin/logs" class="quick-action"><span class="quick-action-icon">›_</span><span><strong>群管日志</strong><small>查看最近的配置和群管操作</small></span></a>
+  <a href="/admin/deployment" class="quick-action"><span class="quick-action-icon">⇄</span><span><strong>执行端与同步</strong><small>查看 Windows 通联与部署设置</small></span></a>
+  <a href="/admin/update-log" class="quick-action"><span class="quick-action-icon">≡</span><span><strong>更新记录</strong><small>核对当前包的功能改动</small></span></a>
+</section>
+
+<section class="panel admin-section" id="console">
+  <div class="section-heading"><div><h2>群消息 / CMD</h2><p>查看授权群的消息接收、机器人回复和群管动作。</p></div><span class="pill {{ 'active' if console_settings.enabled else 'expired' }}">{{ '✅️ 已开启' if console_settings.enabled else '❌️ 已关闭' }}</span></div>
+  <form method="post" action="/admin/console-settings" class="management-form">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <fieldset>
+      <label class="switch-row"><span><strong>允许客户查看群管日志</strong><small>客户还需在账号详情中获得权限。</small></span><input type="checkbox" name="enabled" value="on" {% if console_settings.enabled %}checked{% endif %}></label>
+      <label class="switch-row"><span><strong>显示消息接收与机器人回复</strong><small>只保留文字、@ 和图片标记。</small></span><input type="checkbox" name="messages_enabled" value="on" {% if console_settings.messages_enabled %}checked{% endif %}></label>
+      <div class="form-grid two">
+        <label>服务器最多保留日志数<input type="number" name="retention" min="100" max="10000" value="{{ console_settings.retention }}" required><small>超过数量会自动删除最早的脱敏日志。</small></label>
+        <label>常用关键词（每行或逗号一个）<textarea name="keywords" rows="5" maxlength="6500">{{ (console_settings.keywords or default_console_keywords)|join('\n') }}</textarea><small>例如：发送、撤回、签到、自动回复、定时消息、入群审核、关键词过滤、系统错误。客户可在群页面输入这些词或自己的筛选词。</small></label>
+      </div>
+      <button class="button primary" type="submit">保存日志显示设置</button>
+    </fieldset>
+  </form>
+</section>
+
+<section class="panel admin-section" id="admin-account-security">
+  <div class="section-heading"><div><h2>管理员账户安全</h2><p>修改后台登录密码后会立即退出管理后台，需使用新密码重新登录。</p></div></div>
+  <form method="post" action="/admin/account/password" class="form-stack">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <label>当前密码<input type="password" name="current_password" autocomplete="current-password" required></label>
+    <label>新密码<input type="password" name="new_password" minlength="8" maxlength="128" autocomplete="new-password" required></label>
+    <label>确认新密码<input type="password" name="new_password_confirm" minlength="8" maxlength="128" autocomplete="new-password" required></label>
+    <button class="button secondary" type="submit">更新管理员密码</button>
+  </form>
+</section>
+
+{% endblock %}

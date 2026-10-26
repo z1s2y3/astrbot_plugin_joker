@@ -1,0 +1,29 @@
+[Unit]
+Description=Joker remote customer portal
+After=network-online.target mysql.service mysqld.service
+Wants=network-online.target
+StartLimitIntervalSec=60
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=joker-web
+# Do not assume a same-named primary group. `useradd --system` may use
+# `nogroup` on Debian/Ubuntu; omitting Group makes systemd use the account's
+# actual primary group. The installer writes that group explicitly.
+WorkingDirectory=/www/wwwroot/joker-web
+ExecStart=/www/wwwroot/joker-web/.web-venv/bin/python -m web_client
+Restart=always
+RestartSec=2
+TimeoutStartSec=90
+TimeoutStopSec=15
+Environment=PYTHONUNBUFFERED=1
+# Nginx terminates TLS.  Do not expose Uvicorn directly on a public address.
+Environment=JOKER_WEB_HOST=127.0.0.1
+Environment=JOKER_WEB_PORT=8765
+UMask=0027
+PrivateTmp=true
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target

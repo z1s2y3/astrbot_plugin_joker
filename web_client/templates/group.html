@@ -1,0 +1,1085 @@
+{% extends "admin_base.html" if current_user.is_admin else "user_base.html" %}
+{% block title %}{{ group_display_name|default('群 ' ~ group_id) }} · {{ portal_name }}{% endblock %}
+{% set game_transport = game_transport|default({'callable': false, 'reason': '后台 WebSocket 状态暂未加载。', 'source': '后台全局执行器'}, true) %}
+{% set game_status = game_status|default({'state': 'missing', 'active': false, 'expire_text': '尚未读取', 'client_id': '', 'last_heartbeat_text': '尚未收到 Windows 游戏心跳', 'message': '游戏心跳状态尚未同步。'}, true) %}
+{% set managed_feature_keys = ("reply", "player_reply", "timed_message", "sub_admin") %}
+{% set member_feature_keys = ("audit", "welcome", "blacklist", "mute", "kick", "sub_admin") %}
+{% set content_feature_keys = ("reply", "player_reply", "timed_message", "recall", "keyword_filter", "message_cache") %}
+{% set extension_feature_keys = ("scum", "stats", "lottery", "entertainment", "game_commands", "game_servers", "text_to_image", "steam_signin", "group_config") %}
+{% set integration_profiles = integration_profiles|default([], true) %}
+{% set active_integration = namespace(item=None) %}
+{% for integration in integration_profiles %}
+  {% if integration.get('active') %}{% set active_integration.item = integration %}{% endif %}
+{% endfor %}
+{% set managed_features = namespace(reply=None, player_reply=None, timed_message=None, sub_admin=None) %}
+{% set entertainment_feature = namespace(item=None) %}
+{% for item in features %}
+  {% if item.spec.key == "reply" %}{% set managed_features.reply = item %}
+  {% elif item.spec.key == "player_reply" %}{% set managed_features.player_reply = item %}
+  {% elif item.spec.key == "timed_message" %}{% set managed_features.timed_message = item %}
+  {% elif item.spec.key == "sub_admin" %}{% set managed_features.sub_admin = item %}
+  {% elif item.spec.key == "entertainment" %}{% set entertainment_feature.item = item %}
+  {% endif %}
+{% endfor %}
+{% macro managed_feature_settings(item, heading) -%}
+  {% if item %}
+  <form method="post" action="{{ group_prefix }}/{{ group_id }}/features/{{ item.spec.key }}" class="settings-form managed-feature-settings" data-feature-form data-group-draft-form>
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <fieldset {% if not can_edit %}disabled{% endif %}>
+      <div class="managed-feature-heading">
+        <div><h3>{{ heading }}设置</h3><p>{{ item.spec.description }}</p></div>
+        <div class="feature-title-status">
+          {% if item['values'].get('enabled') %}<span class="pill active">✅️ 已开启</span>{% else %}<span class="pill">❌️ 已关闭</span>{% endif %}
+          <small>{{ item.get('summary', '') }}</small>
+        </div>
+      </div>
+      {% for field in item.spec.fields %}
+        {% set value = item['values'].get(field.key, field.default) %}
+        {% if field.kind == 'bool' %}
+        <label class="switch-row"><span><strong>{{ field.label }}</strong>{% if field.help %}<small>{{ field.help }}</small>{% endif %}</span><input type="checkbox" name="{{ field.key }}" value="on" {% if value %}checked{% endif %}></label>
+        {% elif field.kind == 'choice' %}
+        <label>{{ field.label }}
+          <select name="{{ field.key }}">
+            {% for option_value, option_label in field.choices %}<option value="{{ option_value }}" {% if value == option_value %}selected{% endif %}>{{ option_label }}</option>{% endfor %}
+          </select>
+          {% if field.help %}<small>{{ field.help }}</small>{% endif %}
+        </label>
+        {% elif field.kind == 'multichoice' %}
+        {% set selected_values = value if value is iterable and value is not string else [value] %}
+        <div class="multi-choice-field"><strong>{{ field.label }}</strong><div class="multi-choice-options">{% for option_value, option_label in field.choices %}<label class="checkbox-box"><input type="checkbox" name="{{ field.key }}" value="{{ option_value }}" {% if option_value in selected_values %}checked{% endif %}> {{ option_label }}</label>{% endfor %}</div>{% if field.help %}<small>{{ field.help }}</small>{% endif %}</div>
+        {% elif field.kind in ['text', 'list'] %}
+        <label>{{ field.label }}<textarea name="{{ field.key }}" rows="{{ 4 if field.kind == 'list' else 3 }}" maxlength="{{ field.max_length }}">{{ display_value(field, value) }}</textarea>{% if field.help %}<small>{{ field.help }}</small>{% endif %}</label>
+        {% elif field.kind == 'int' %}
+        <label>{{ field.label }}<input type="number" name="{{ field.key }}" value="{{ value }}" min="{{ field.minimum }}" max="{{ field.maximum }}" required>{% if field.help %}<small>{{ field.help }}</small>{% endif %}</label>
+        {% else %}
+        <label>{{ field.label }}<input name="{{ field.key }}" value="{{ value }}" maxlength="{{ field.max_length }}" {% if field.default %}required{% endif %}>{% if field.help %}<small>{{ field.help }}</small>{% endif %}</label>
+        {% endif %}
+      {% endfor %}
+      <div class="form-submit-row"><small>只有提交此表单才会保存并等待 Windows 同步。</small><button class="button secondary" type="submit">保存{{ heading }}设置</button></div>
+    </fieldset>
+  </form>
+  {% endif %}
+{%- endmacro %}
+{% block sidebar_extra %}
+<section class="sidebar-section group-sidebar-nav" aria-label="当前群功能导航">
+  <div class="sidebar-label" title="QQ 群 {{ group_id }}">{{ group_display_name|default('群 ' ~ group_id) }}</div>
+  {% if sync.status in ['unavailable', 'protected', 'partial'] %}
+    {% set sidebar_sync_class = 'is-error' %}
+  {% elif sync.status == 'error' %}
+    {% set sidebar_sync_class = 'is-error' %}
+  {% elif sync.pending %}
+    {% set sidebar_sync_class = 'is-pending' %}
+  {% elif sync.refresh_requested %}
+    {% set sidebar_sync_class = 'is-refresh' %}
+  {% elif sync.online %}
+    {% set sidebar_sync_class = 'is-online' %}
+  {% else %}
+    {% set sidebar_sync_class = 'is-offline' %}
+  {% endif %}
+  <div class="sidebar-sync group-sidebar-status {{ sidebar_sync_class }}" role="status" aria-live="polite" title="{{ sync.detail|default('') }}">
+    <strong data-sync-sidebar-badge>{{ sync.badge|default('尚未连通') }}</strong>
+    <small data-sync-sidebar-text>{{ sync.display_text|default(sync.text) }}</small>
+  </div>
+  <nav class="group-nav-quick" aria-label="群管常用入口">
+    <a href="#group-overview" data-group-section-switch="group-overview">概览</a>
+    <a href="#group-feature-overview" data-group-section-switch="group-feature-overview">功能总览</a>
+    <a href="#feature-audit" data-group-section-switch="feature-audit">审核</a>
+    <a href="#member-management" data-group-section-switch="member-management">成员管理</a>
+    <a href="#group-message-history" data-group-section-switch="group-message-history">聊天记录</a>
+    <a href="#stats-data" data-group-section-switch="stats-data">签到数据</a>
+    <a href="{{ group_prefix }}/{{ group_id }}/integrations">服务器</a>
+  </nav>
+  <nav class="sidebar-nav group-nav-compact" aria-label="群功能导航">
+    <a class="sidebar-link" href="#group-overview" data-group-section-switch="group-overview">群概览</a>
+    <a class="sidebar-link" href="#group-feature-overview" data-group-section-switch="group-feature-overview">群功能总览</a>
+    <details class="group-nav-category" open>
+      <summary>群管</summary>
+      <div class="group-nav-subtree-items">
+        {% for key in ("audit", "welcome", "blacklist", "mute", "kick", "recall", "message_cache", "keyword_filter", "sub_admin", "reply", "player_reply", "timed_message", "text_to_image", "group_config") %}
+          {% for item in features if item.spec.key == key %}<a class="sidebar-link" href="#feature-{{ key }}" data-group-section-switch="feature-{{ key }}">{{ item.spec.label }}</a>{% endfor %}
+        {% endfor %}
+        <a class="sidebar-link" href="#blacklist-data" data-group-section-switch="blacklist-data">黑名单记录</a>
+        <a class="sidebar-link" href="#member-management" data-group-section-switch="member-management">成员与群操作</a>
+        <a class="sidebar-link" href="#group-message-history" data-group-section-switch="group-message-history">群聊天记录</a>
+        <a class="sidebar-link" href="#runtime-data" data-group-section-switch="runtime-data">群管运行记录</a>
+      </div>
+    </details>
+    <details class="group-nav-category">
+      <summary>游戏与服务器</summary>
+      <div class="group-nav-subtree-items">
+        {% for key in ("scum", "game_commands", "game_servers", "steam_signin") %}
+          {% for item in features if item.spec.key == key %}<a class="sidebar-link" href="#feature-{{ key }}" data-group-section-switch="feature-{{ key }}">{{ item.spec.label }}</a>{% endfor %}
+        {% endfor %}
+  <a class="sidebar-link" href="{{ group_prefix }}/{{ group_id }}/integrations">服务器与数据库</a>
+      </div>
+    </details>
+    <details class="group-nav-category">
+      <summary>查询与数据</summary>
+      <div class="group-nav-subtree-items">
+        {% for item in features if item.spec.key == "stats" %}<a class="sidebar-link" href="#feature-stats" data-group-section-switch="feature-stats">签到与统计设置</a>{% endfor %}
+        <a class="sidebar-link" href="#signin-profiles" data-group-section-switch="signin-profiles">签到方案</a>
+        <a class="sidebar-link" href="#stats-data" data-group-section-switch="stats-data">签到数据</a>
+        <a class="sidebar-link" href="#runtime-data" data-group-section-switch="runtime-data">运行状态</a>
+      </div>
+    </details>
+    <details class="group-nav-category">
+      <summary>娱乐</summary>
+      <div class="group-nav-subtree-items">
+        <a class="sidebar-link" href="#feature-entertainment" data-group-section-switch="feature-entertainment">娱乐总设置</a>
+        <a class="sidebar-link" href="#entertainment-dice" data-group-section-switch="entertainment-dice">骰子</a>
+        <a class="sidebar-link" href="#entertainment-rps" data-group-section-switch="entertainment-rps">猜拳</a>
+        <a class="sidebar-link" href="#entertainment-random" data-group-section-switch="entertainment-random">随机选择</a>
+        <a class="sidebar-link" href="#entertainment-coin" data-group-section-switch="entertainment-coin">抛硬币</a>
+        <a class="sidebar-link" href="#entertainment-fortune" data-group-section-switch="entertainment-fortune">今日运势</a>
+        <a class="sidebar-link" href="#entertainment-luck" data-group-section-switch="entertainment-luck">幸运数字</a>
+        <a class="sidebar-link" href="#entertainment-answer" data-group-section-switch="entertainment-answer">答案之书</a>
+        <a class="sidebar-link" href="#entertainment-music" data-group-section-switch="entertainment-music">点歌</a>
+        <a class="sidebar-link" href="#entertainment-like" data-group-section-switch="entertainment-like">点赞</a>
+        <a class="sidebar-link" href="#entertainment-video" data-group-section-switch="entertainment-video">视频搜索</a>
+        <a class="sidebar-link" href="#entertainment-time" data-group-section-switch="entertainment-time">当前时间</a>
+        <a class="sidebar-link" href="#feature-lottery" data-group-section-switch="feature-lottery">抽奖设置</a>
+        <a class="sidebar-link" href="#lottery-awards" data-group-section-switch="lottery-awards">抽奖奖项</a>
+        <a class="sidebar-link" href="#lottery-campaigns" data-group-section-switch="lottery-campaigns">抽奖活动</a>
+      </div>
+    </details>
+    <details class="group-nav-category">
+      <summary>系统</summary>
+      <div class="group-nav-subtree-items">
+        {% if can_view_console %}<a class="sidebar-link" href="#console-log" data-group-section-switch="console-log">群消息收发</a>{% endif %}
+        {% if clone_sources %}<a class="sidebar-link" href="#clone-config" data-group-section-switch="clone-config">复制配置</a>{% endif %}
+      </div>
+    </details>
+  </nav>
+</section>
+{% endblock %}
+{% block content %}
+<a class="back-link" href="{{ '/admin/groups' if current_user.is_admin else '/user' }}">← {{ '返回群管分群' if current_user.is_admin else '返回我的群管' }}</a>
+<div class="group-workspace" data-group-workspace>
+<section class="group-section-panel group-overview-panel" id="group-overview" data-group-section-panel="group-overview">
+<section class="group-hero">
+  <div>
+    <div class="eyebrow">群管配置{% if current_user.is_admin %} · 管理员{% endif %}</div>
+    <h1>{{ group_display_name|default('群 ' ~ group_id) }}</h1>
+    <p class="muted">QQ 群 {{ group_id }}</p>
+    <div class="status-line">
+      <span class="pill {{ 'active' if auth.active else 'expired' }}">{{ '授权有效' if auth.active else ('授权待验证' if auth.state == 'unverified' else '授权过期') }}</span>
+      <span>{{ auth.expire_text }}</span>
+      <span>·</span>
+      <span>{{ '✅️ 机器人已开机' if powered_on else '❌️ 机器人已关机' }}</span>
+      <span>·</span>
+      <span>{{ sync.display_text|default(sync.text) }}</span>
+    </div>
+  </div>
+  <div class="row-actions">
+    {% if not current_user.is_admin %}<a class="button secondary" href="{{ group_prefix }}/{{ group_id }}/integrations">服务器与数据库</a>{% endif %}
+  <a class="button {{ 'danger' if powered_on else 'primary' }}" href="#member-management" data-group-section-switch="member-management">{{ '❌️ 关机与成员操作' if powered_on else '✅️ 开机与成员操作' }}</a>
+  <form method="post" action="{{ group_prefix }}/{{ group_id }}/delete" data-confirm="确定删除这个网页群组登记吗？这只会移除网页账号绑定，不会删除 Windows 授权和本地群配置。">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <button class="button danger" type="submit">{{ '删除网页群组' if current_user.is_admin else '移除本群登记' }}</button>
+  </form>
+  </div>
+</section>
+
+<section class="sync-flow panel" aria-labelledby="sync-flow-title"
+  data-sync-status-url="{{ group_prefix }}/{{ group_id }}/sync-status"
+  data-sync-watch="{{ '1' if request.app.state.settings.data_mode == 'remote' and (sync.pending or sync.refresh_requested or not sync.online or sync.status != 'synced') else '0' }}">
+  <div class="section-heading">
+    <div>
+      <h2 id="sync-flow-title">同步状态</h2>
+      <p>网页保存配置，Windows AstrBot 拉取并应用。Linux 不运行机器人。</p>
+    </div>
+  </div>
+  <ol class="sync-flow-steps">
+    <li class="{{ 'flow-current' if sync.pending or not sync.revision else 'flow-complete' }}">
+      <span class="flow-number">1</span>
+      <div><strong>网页保存</strong><small>{% if sync.revision %}版本 {{ sync.revision }} 已保存{% else %}等待 Windows 首次上传{% endif %}</small></div>
+    </li>
+    <li class="{{ 'flow-current' if sync.pending or sync.refresh_requested or (not sync.revision and sync.online) else ('flow-complete' if sync.online and sync.status == 'synced' else '') }}">
+      <span class="flow-number">2</span>
+      <div><strong>Windows 拉取</strong><small>{% if sync.status in ['unavailable', 'protected', 'partial'] %}{{ sync.display_text|default(sync.text) }}{% elif sync.online %}AstrBot 在线，下一轮同步拉取{% else %}{{ sync.display_text|default(sync.text) }}{% endif %}</small></div>
+    </li>
+    <li class="{{ 'flow-error' if sync.status == 'error' else ('flow-current' if sync.pending or sync.refresh_requested or not sync.revision else 'flow-complete') }}">
+      <span class="flow-number">3</span>
+      <div><strong>本地应用</strong><small>{% if sync.status == 'unavailable' %}Windows 本地未登记此群{% elif sync.status == 'protected' %}本地数据读取保护中，恢复后自动继续{% elif sync.status == 'partial' %}群配置已上传，等待授权数据恢复{% elif sync.status == 'error' %}应用失败，通联后自动重试{% elif sync.pending %}等待 Windows 写入{% elif sync.revision %}已应用版本 {{ sync.applied_revision }}；数据库快照后台同步{% else %}首次同步后显示状态{% endif %}</small></div>
+    </li>
+  </ol>
+  <div class="sync-diagnostic" role="status" aria-live="polite">
+    <strong data-sync-live-badge>{{ sync.badge }}</strong>
+    <span data-sync-live-detail>{{ sync.last_seen_text }}。{{ sync.detail }}</span>
+  </div>
+  {% if request.app.state.settings.data_mode == 'remote' %}
+  <div class="sync-flow-actions">
+    <small>配置保存后先确认群配置，再后台拉取对应 FTP 数据库；“刷新状态”只读取最新状态，不会重复提交配置。</small>
+    <a class="button ghost small" href="{{ group_prefix }}/{{ group_id }}#sync-flow-title" data-sync-status-refresh>刷新状态</a>
+    <form method="post" action="{{ group_prefix }}/{{ group_id }}/sync-refresh" data-sync-refresh-form>
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <button class="button ghost small" type="submit" data-sync-refresh-button data-busy-label="请求已提交…" {% if sync.refresh_requested %}disabled{% endif %}>{{ '已请求首次补传' if sync.refresh_requested and not sync.revision else ('已请求重新同步' if sync.refresh_requested else ('请求首次同步' if not sync.revision else '请求重新同步')) }}</button>
+    </form>
+  </div>
+  {% endif %}
+</section>
+
+{% if global_defaults|default([]) %}
+<section class="panel management-panel group-section-panel" id="global-defaults" data-group-section-panel="global-defaults">
+  <div class="section-heading"><div><h2>全局群管默认配置</h2><p>以下是全局群管页面的默认值。本群可以单独覆盖；修改全局值后请在全局页面执行同步，才会覆盖已有分群。</p></div>{% if current_user.is_admin %}<a class="button ghost small" href="/admin/global">打开全局配置</a>{% endif %}</div>
+  <div class="summary-grid">
+    {% for item in global_defaults %}<div><strong>{{ '已开启' if item.enabled else '已关闭' }}</strong><span>{{ item.label }}</span></div>{% endfor %}
+  </div>
+</section>
+{% endif %}
+
+{% if sync.pending and sync.status == 'error' %}
+<div class="license-warning"><strong>配置已保存，等待 Windows 应用</strong><span>{{ sync.display_text|default(sync.text) }}。版本 {{ sync.revision }} 已保留，通联后自动重试。</span></div>
+{% elif sync.pending %}
+<div class="license-warning neutral"><strong>{{ sync.badge }}</strong><span>{{ sync.detail }}</span></div>
+{% elif sync.status == 'unavailable' %}
+<div class="license-warning"><strong>{{ sync.badge }}</strong><span>{{ sync.detail }}</span></div>
+{% elif sync.status == 'protected' %}
+<div class="license-warning neutral"><strong>{{ sync.badge }}</strong><span>{{ sync.detail }}</span></div>
+{% elif sync.status == 'partial' %}
+<div class="license-warning neutral"><strong>{{ sync.badge }}</strong><span>{{ sync.detail }}</span></div>
+{% elif sync.refresh_requested %}
+<div class="license-warning neutral"><strong>已请求 Windows 补传</strong><span>请求已保存，Windows 联网后上传当前配置。</span></div>
+{% elif not sync.online %}
+<div class="license-warning"><strong>{{ sync.badge }}</strong><span>{{ sync.detail }}</span></div>
+{% endif %}
+
+<section class="panel integration-status-panel" id="integration-status" aria-labelledby="integration-status-title">
+  <div class="section-heading">
+    <div>
+      <h2 id="integration-status-title">游戏与数据库通联</h2>
+      <p>游戏心跳、数据库快照和群管授权分别计状态；网页保存后由 Windows 拉取并执行。</p>
+    </div>
+    <span class="pill {{ 'active' if game_status.active else ('expired' if game_status.state == 'expired' else '') }}">
+      {{ '游戏心跳有效' if game_status.active else ('游戏授权过期' if game_status.state == 'expired' else ('本地执行' if game_status.state == 'local' else '未建立游戏心跳')) }}
+    </span>
+  </div>
+  <div class="integration-status-grid">
+    <div class="integration-status-item">
+      <strong>自建游戏授权卡密</strong>
+      <span>{{ game_status.expire_text }}</span>
+      <small>{{ game_status.message }}</small>
+    </div>
+    <div class="integration-status-item">
+      <strong>Windows 执行端</strong>
+      <span>{{ game_status.client_id or '未登记' }}</span>
+      <small>{{ game_status.last_heartbeat_text }}</small>
+    </div>
+    <div class="integration-status-item">
+      <strong>游戏插件 WebSocket</strong>
+      <span>{{ '已确认可调用' if game_transport.callable else '等待确认' }}</span>
+      <small>{{ game_transport.reason }}</small>
+    </div>
+    {% set websocket_site = websocket_site_settings|default({}) %}
+    {% set websocket_access = websocket_access_status|default({}) %}
+    <div class="integration-status-item">
+      <strong>IM3 外部网站卡密</strong>
+      <span>{{ '已确认网站入房' if websocket_license_verified|default(false) else ('网站已配置' if websocket_site.get('enabled', false) else '后台未启用') }}</span>
+      <small>{% if websocket_license_verified|default(false) %}已保存 IM3 外部卡密 {{ websocket_access.get('card_mask', '') }}，网站地址由后台统一维护，Windows 会使用该卡密连接。{% elif websocket_site.get('enabled', false) %}等待用户输入 IM3 网站发放的卡密；网页会确认 Socket.IO 握手、join_room 和授权回执。{% else %}请联系管理员在后台配置并启用小程序 WebSocket。{% endif %}</small>
+    </div>
+    <div class="integration-status-item">
+      <strong>数据库快照</strong>
+      {% if active_integration.item and active_integration.item.database.enabled and active_integration.item.database.sqlite_path and active_integration.item.snapshot_revision %}
+      <span>数据库「{{ active_integration.item.database.display_name or active_integration.item.database.database or '未命名数据库' }}」已连接 · 版本 {{ active_integration.item.snapshot_revision }}</span>
+      <small class="wrap-anywhere">服务器「{{ active_integration.item.name or active_integration.item.profile_id }}」{% if active_integration.item.database_profile_id and active_integration.item.database_profile_id != active_integration.item.profile_id %}（复用服务器 {{ active_integration.item.database_profile_id }} 的数据库）{% endif %}：{{ active_integration.item.database.sqlite_path }}。SteamID 入群验证只读查询；签到仅在此数据库完成实际写入并校验成功后回复。</small>
+      {% else %}
+      <span>未绑定 FTP 数据库</span>
+      <small>请在“服务器与数据库”中一次填写 FTP 与 SQLite 数据库文件路径，再检测生成快照；未绑定时不会修改服务器数据库。</small>
+      {% endif %}
+    </div>
+  </div>
+  <div class="form-actions">
+    <a class="button secondary" href="{{ group_prefix }}/{{ group_id }}/integrations">打开服务器与数据库</a>
+    {% if current_user.is_admin %}<a class="button secondary" href="/admin/websocket">打开 WebSocket 设置</a>{% endif %}
+  </div>
+  {% if not current_user.is_admin %}
+  <div class="license-verify-box">
+    <div>
+      <strong>用户游戏卡密验证</strong>
+      <small>{% if game_license_verified %}已验证本群自建游戏授权卡密，游戏功能可以继续检查 Windows 心跳。{% else %}输入主人发放的 JG... 游戏授权卡密。它只负责游戏功能权限，不是 IM3 网站卡密。{% endif %}</small>
+    </div>
+    <form method="post" action="{{ group_prefix }}/{{ group_id }}/game-license" class="inline-form">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <input name="game_card" type="password" maxlength="96" autocomplete="off" placeholder="JG... 游戏卡密" required>
+      <button class="button secondary" type="submit">{{ '重新验证' if game_license_verified else '验证游戏卡密' }}</button>
+    </form>
+    {% if game_license_verified %}
+    <form method="post" action="{{ group_prefix }}/{{ group_id }}/game-websocket-test" class="inline-form">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <button class="button ghost" type="submit">重新检测游戏 WebSocket</button>
+    </form>
+    {% endif %}
+  </div>
+  <div class="license-verify-box">
+    <div>
+      <strong>小程序 WebSocket 卡密</strong>
+      <small>{% if websocket_license_verified %}IM3 网站已确认授权，卡密已独立加密保存。它只负责 IM3 网站连接，不会授予游戏权限。{% else %}输入 IM3 网站发放的实际卡密。网页会验证握手、join_room 和明确授权回执；不需要在这里填写 ws 或 apiKey。{% endif %}</small>
+    </div>
+    <form method="post" action="{{ group_prefix }}/{{ group_id }}/websocket-license" class="inline-form">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <input name="websocket_key" type="password" maxlength="512" autocomplete="off" placeholder="WebSocket 网站卡密" required>
+      <button class="button secondary" type="submit">{{ '重新连接网站卡密' if websocket_license_verified else '连接网站卡密' }}</button>
+    </form>
+    {% if websocket_license_verified %}
+    <form method="post" action="{{ group_prefix }}/{{ group_id }}/websocket-license-test" class="inline-form">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <button class="button ghost" type="submit">重新检测小程序通联</button>
+    </form>
+    {% endif %}
+  </div>
+  {% endif %}
+</section>
+
+{% if not can_edit %}
+<div class="license-warning"><strong>当前配置只读</strong><span>{{ edit_block_reason|default('授权无效或已过期，请激活新卡密或由主人续期。') }}</span></div>
+{% elif not powered_on %}
+<div class="license-warning neutral"><strong>当前已关机</strong><span>配置可保存，机器人关机期间不执行群管功能。</span></div>
+{% elif not sync.online and request.app.state.settings.data_mode == 'remote' %}
+<div class="license-warning neutral"><strong>Windows 当前离线</strong><span>网页配置仍可保存，版本会保留在网页数据库；Windows 恢复通联后自动拉取并应用。</span></div>
+{% endif %}
+
+{% if console_enabled and not can_view_console %}
+<div class="license-warning neutral"><strong>消息收发记录未授权</strong><span>请联系管理员为当前网页账号开启“查看 CMD 日志”权限。</span></div>
+{% endif %}
+</section>
+
+<section class="group-section-panel group-feature-overview-panel" id="group-feature-overview" data-group-section-panel="group-feature-overview" aria-labelledby="group-feature-overview-title">
+<section class="panel group-feature-summary" aria-labelledby="group-feature-overview-title">
+  {% set feature_counts = namespace(total=0, enabled=0) %}
+  {% for item in features %}
+    {% set feature_counts.total = feature_counts.total + 1 %}
+    {% if item['values'].get('enabled', false) %}{% set feature_counts.enabled = feature_counts.enabled + 1 %}{% endif %}
+  {% endfor %}
+  <div class="section-heading">
+    <div><h2 id="group-feature-overview-title">群功能总览</h2><p>点击功能名称进入对应设置；下方只显示本群实际生效的指令用法、可用用户和开关状态。</p></div>
+    <span class="pill active">{{ feature_counts.enabled }} / {{ feature_counts.total }} 项已开启</span>
+  </div>
+  {% set feature_categories = [
+    ('群管', ('audit', 'welcome', 'blacklist', 'mute', 'kick', 'recall', 'message_cache', 'keyword_filter', 'sub_admin', 'reply', 'player_reply', 'timed_message', 'text_to_image', 'group_config')),
+    ('游戏与服务器', ('scum', 'game_commands', 'game_servers', 'steam_signin')),
+    ('查询与数据', ('stats',)),
+    ('娱乐', ('entertainment', 'lottery'))
+  ] %}
+  <div class="feature-summary-categories">
+    {% for category_label, category_keys in feature_categories %}
+    <details class="feature-summary-category" {% if loop.first %}open{% endif %}>
+      <summary><strong>{{ category_label }}</strong><span>{{ category_keys|length }} 项</span></summary>
+      <div class="feature-summary-grid">
+        {% for item in features if item.spec.key in category_keys %}
+        <a class="feature-summary-item {{ 'is-enabled' if item['values'].get('enabled', false) else 'is-disabled' }}" href="#feature-{{ item.spec.key }}" data-group-section-switch="feature-{{ item.spec.key }}">
+          <span><strong>{{ item.spec.label }}</strong><small>{{ item.spec.description }}</small></span>
+          <b>{{ '已开启' if item['values'].get('enabled', false) else '未开启' }}</b>
+        </a>
+        {% endfor %}
+      </div>
+    </details>
+    {% endfor %}
+  </div>
+  {% if action_features %}
+  <div class="section-heading compact-heading"><div><h3>统计操作功能</h3><p>这些功能共用“统计系统”开关，分别显示实际可用状态，网页不重复创建设置项。</p></div></div>
+  <div class="feature-summary-grid action-feature-summary-grid">
+    {% for item in action_features %}
+    <a class="feature-summary-item {{ 'is-enabled' if item.enabled else 'is-disabled' }}" href="#{{ item.section_id }}" data-group-section-switch="{{ item.section_id }}">
+      <span><strong>{{ item.label }}</strong><small>{{ item.summary }}</small></span>
+      <b>{{ '已开启' if item.enabled else '未开启' }}</b>
+    </a>
+    {% endfor %}
+  </div>
+  {% endif %}
+</section>
+
+<section class="panel group-command-summary" aria-labelledby="group-command-summary-title">
+  <div class="section-heading">
+    <div><h2 id="group-command-summary-title">本群实际指令</h2><p>Windows 同步后按这里的名称执行；用法可直接复制，用户字段表示允许使用该指令的成员范围。</p></div>
+    <span class="pill neutral">同步后生效</span>
+  </div>
+  {% if group_command_groups %}
+  <div class="command-group-grid">
+    {% for command_group in group_command_groups %}
+    <div class="command-group-card">
+      <h3>{{ command_group.title }}{% if command_group.edit_section %} <a class="button ghost small" href="#{{ command_group.edit_section }}">编辑指令</a>{% endif %}</h3>
+      <div class="command-list">
+    {% for item in command_group['items'] %}
+        <div class="command-list-item {{ 'is-enabled' if item.enabled else 'is-disabled' }}"><code>{{ item.command }}</code><span>用法：{{ item.usage or '直接发送' }}<br>用户：{{ item.audience|default('所有成员', true) }}</span><small>{{ '可用' if item.enabled else '未开启' }}</small></div>
+        {% endfor %}
+      </div>
+    </div>
+    {% endfor %}
+  </div>
+  {% else %}<div class="empty-state">当前群还没有可显示的分群指令。</div>{% endif %}
+</section>
+
+<section class="panel command-editor-panel" id="command-editor" aria-labelledby="command-editor-title">
+  <div class="section-heading">
+    <div>
+      <h2 id="command-editor-title">编辑指令名称</h2>
+      <p>这里只修改可配置的指令名称；保存后会同步到 Windows，功能开关、参数和回复内容不变。</p>
+    </div>
+    <span class="pill neutral">保存后同步 Windows</span>
+  </div>
+  {% for editor in command_editors|default([], true) %}
+  <section class="command-editor-group" id="command-editor-{{ editor.feature_key }}">
+    <div class="section-heading compact-heading"><div><h3>{{ editor.title }}</h3></div></div>
+    {% if editor.fields %}
+    <div class="command-editor-grid">
+      {% for field in editor.fields %}
+      <form method="post" action="{{ group_prefix }}/{{ group_id }}/commands" class="command-editor-row" data-group-draft-form>
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <input type="hidden" name="feature_key" value="{{ field.feature_key }}">
+        <input type="hidden" name="command_key" value="{{ field.key }}">
+        <label>{{ field.label }}<input name="value" value="{{ field.value }}" maxlength="64" required></label>
+        <button class="button secondary small" type="submit" {% if not can_edit %}disabled{% endif %}>保存名称</button>
+      </form>
+      {% endfor %}
+    </div>
+    {% endif %}
+    {% if editor.profiles %}
+    <div class="command-editor-grid">
+      {% for profile in editor.profiles %}
+      <form method="post" action="{{ group_prefix }}/{{ group_id }}/commands" class="command-editor-row" data-group-draft-form>
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <input type="hidden" name="feature_key" value="stats">
+        <input type="hidden" name="command_kind" value="signin_profile">
+        <input type="hidden" name="target_id" value="{{ profile.id }}">
+        <label>{{ profile.name }}<input name="value" value="{{ profile.command }}" maxlength="32" required></label>
+        <button class="button secondary small" type="submit" {% if not can_edit %}disabled{% endif %}>保存名称</button>
+      </form>
+      {% endfor %}
+    </div>
+    {% endif %}
+    {% if editor.campaigns %}
+    <div class="command-editor-grid">
+      {% for campaign in editor.campaigns %}
+      <form method="post" action="{{ group_prefix }}/{{ group_id }}/commands" class="command-editor-row" data-group-draft-form>
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <input type="hidden" name="feature_key" value="lottery">
+        <input type="hidden" name="command_kind" value="lottery_campaign">
+        <input type="hidden" name="target_id" value="{{ campaign.id }}">
+        <label>{{ campaign.name }}<input name="value" value="{{ campaign.command }}" maxlength="256" required></label>
+        <button class="button secondary small" type="submit" {% if not can_edit %}disabled{% endif %}>保存名称</button>
+      </form>
+      {% endfor %}
+    </div>
+    {% endif %}
+    {% if editor.game_commands %}
+    <div class="command-editor-grid">
+      {% for command in editor.game_commands %}
+      <form method="post" action="{{ group_prefix }}/{{ group_id }}/commands" class="command-editor-row" data-group-draft-form>
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <input type="hidden" name="feature_key" value="game_commands">
+        <input type="hidden" name="command_kind" value="game">
+        <input type="hidden" name="command_index" value="{{ command.index }}">
+        <label>{{ command.name }}<input name="value" value="{{ command.command }}" maxlength="64" required></label>
+        <button class="button secondary small" type="submit" {% if not can_edit %}disabled{% endif %}>保存名称</button>
+      </form>
+      {% endfor %}
+    </div>
+    {% endif %}
+  </section>
+  {% else %}
+  <div class="empty-state">当前没有可编辑的指令名称。</div>
+  {% endfor %}
+</section>
+</section>
+
+{% if clone_sources %}
+<section class="panel management-panel group-section-panel" id="clone-config" data-group-section-panel="clone-config">
+  <div class="section-heading"><div><h2>复制群管配置</h2><p>把其他群的功能开关、自动回复、定时任务和分群管理员复制到当前群。当前群授权和开机状态不变。</p></div></div>
+  <form method="post" action="{{ group_prefix }}/{{ group_id }}/clone" class="inline-add" data-group-draft-form>
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <label>源群<select name="source_group_id" required {% if not can_edit %}disabled{% endif %}>
+      <option value="">选择要复制的群</option>
+      {% for source_group_id in clone_sources %}<option value="{{ source_group_id }}">群 {{ source_group_id }}</option>{% endfor %}
+    </select></label>
+    <button class="button secondary" type="submit" {% if not can_edit %}disabled{% endif %}>复制到当前群</button>
+  </form>
+</section>
+{% endif %}
+
+{% if can_view_console %}
+<section class="panel management-panel group-section-panel" id="console-log" data-group-section-panel="console-log">
+  <div class="section-heading"><div><h2>群消息收发记录</h2><p>显示当前群的收发消息和群管动作。时间按北京时间显示；消息正文由管理员控制。</p></div><a class="button ghost small" href="{{ group_prefix }}/{{ group_id }}#console-log">刷新</a></div>
+  <form method="get" action="{{ group_prefix }}/{{ group_id }}#console-log" class="management-form console-filter">
+    <div class="form-grid four">
+      <label>关键词<input name="console_keywords" list="console-keywords" maxlength="6500" value="{{ console_filter }}" placeholder="例如：签到、自动回复、消息内容"></label>
+      <label>用户 QQ<input name="console_user_id" inputmode="numeric" pattern="[0-9]{1,20}" maxlength="20" value="{{ console_user_id }}" placeholder="精确 QQ 号"></label>
+      <label>用户昵称<input name="console_user_name" maxlength="128" value="{{ console_user_name }}" placeholder="支持部分名称"></label>
+      <label>开始时间<input name="console_start" type="datetime-local" step="1" value="{{ console_start }}"></label>
+      <label>结束时间<input name="console_end" type="datetime-local" step="1" value="{{ console_end }}"></label>
+    </div>
+    <datalist id="console-keywords">{% for keyword in console_keywords %}<option value="{{ keyword }}">{% endfor %}</datalist>
+    <div class="form-submit-row"><small>可组合 QQ、昵称、关键词和时间段筛选；筛选后仍停留在本页。</small><div class="row-actions"><button class="button secondary" type="submit">筛选</button>{% if console_filter or console_user_id or console_user_name or console_start or console_end %}<a class="button ghost" href="{{ group_prefix }}/{{ group_id }}#console-log">清除</a>{% endif %}</div></div>
+    {% if console_filter_error %}<p class="console-filter-error" role="alert">{{ console_filter_error }}</p>{% endif %}
+  </form>
+  <div class="table-wrap console-table"><table>
+    <thead><tr><th>时间（北京）</th><th>方向</th><th>QQ 号</th><th>昵称</th><th>内容</th><th>类型</th><th>动作</th><th>摘要</th></tr></thead>
+    <tbody>{% for event in console_events %}<tr>
+      <td>{{ console_event_time(event.occurred_at) }}</td><td><strong>{{ {'inbound':'接收','outbound':'机器人回复'}.get(event.direction, '-') }}</strong></td><td>{{ event.user_id or '-' }}</td><td>{{ event.user_name or '-' }}</td><td class="console-message">{{ event.message_content or '-' }}</td><td>{{ event.message_type or '-' }}</td><td>{{ event.action or '-' }}{% if event.message_id %}<small class="console-id"> #{{ event.message_id }}</small>{% endif %}</td><td>{{ event.detail or '-' }}</td>
+    </tr>{% else %}<tr><td colspan="8" class="muted">暂无记录。请确认 Windows 已开启同步和消息正文。</td></tr>{% endfor %}</tbody>
+  </table></div>
+  {% set pagination = console_pagination %}{% include "_pagination.html" %}
+</section>
+{% endif %}
+
+{% set blacklist_summary = blacklist_summary|default({'available': false, 'message': '等待 Windows 同步黑名单数据', 'total': 0, 'active': 0, 'entries': []}) %}
+{% set stats_summary = stats_summary|default({'available': false, 'message': '等待 Windows 同步统计数据', 'group': {'total_users': 0, 'today_signins': 0, 'total_points': 0, 'avg_points': 0}, 'ranking': [], 'steam_bindings': []}) %}
+{% set runtime_panels = runtime_panels|default({}) %}
+{% set global_blacklist_runtime = runtime_panels.get('global_blacklist', {}) %}
+<section class="panel management-panel group-section-panel" id="blacklist-data" data-group-section-panel="blacklist-data">
+  <div class="section-heading"><div><h2>黑名单数据</h2><p>本群黑名单和全局黑名单分开显示；已被踢出的用户不能在成员列表操作，请在本页按 QQ 号删除本群黑名单记录。</p></div></div>
+  {% if not blacklist_summary.available %}
+    <div class="empty-state">{{ blacklist_summary.message }}</div>
+  {% else %}
+    <div class="summary-grid">
+      <div><strong>{{ blacklist_summary.total }}</strong><span>记录总数</span></div>
+      <div><strong>{{ blacklist_summary.active }}</strong><span>当前生效</span></div>
+      <div><strong>{{ [0, blacklist_summary.total - blacklist_summary.active]|max }}</strong><span>已解除/过期</span></div>
+    </div>
+    <form method="post" action="{{ group_prefix }}/{{ group_id }}/member-action" class="form-submit-row" data-blacklist-bulk-form>
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}"><input type="hidden" name="action" value="delete_blacklist_record"><input type="hidden" name="return_section" value="blacklist-data"><span class="muted">可勾选多条本群黑名单记录后一次删除。</span><div data-blacklist-bulk-inputs></div><button class="button danger small" type="submit" data-blacklist-bulk-submit disabled data-confirm="确定永久删除选中的本群黑名单记录吗？">删除选中记录</button>
+    </form>
+    <div class="table-wrap"><table><thead><tr><th>选择</th><th>QQ号</th><th>状态</th><th>类型</th><th>原因</th><th>到期时间</th><th>操作</th></tr></thead><tbody>
+      {% for entry in blacklist_summary.entries %}<tr><td>{% if entry.user_id %}<input type="checkbox" value="{{ entry.user_id }}" data-blacklist-select aria-label="选择黑名单 {{ entry.user_id }}">{% else %}-{% endif %}</td><td>{{ entry.user_id }}</td><td>{{ '生效' if entry.active else '已解除/过期' }}</td><td>{{ entry.ban_type or '-' }}</td><td class="breakable">{{ entry.reason or '-' }}</td><td>{{ entry.expire_text|default(entry.expire_time or '永久') }}</td><td>{% if entry.user_id %}<form method="post" action="{{ group_prefix }}/{{ group_id }}/member-action" class="inline-form"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><input type="hidden" name="action" value="delete_blacklist_record"><input type="hidden" name="user_id" value="{{ entry.user_id }}"><input type="hidden" name="return_section" value="blacklist-data"><button class="button secondary small" type="submit" data-confirm="确定永久删除该 QQ 号的本群黑名单记录吗？">删除记录</button></form>{% else %}<span class="muted">无需操作</span>{% endif %}</td></tr>
+      {% else %}<tr><td colspan="7" class="muted">暂无黑名单记录</td></tr>{% endfor %}
+    </tbody></table></div>
+  {% endif %}
+  <div class="section-heading compact-heading"><div><h3>全局黑名单</h3><p>显示拉黑时间。删除全局黑名单只对当前群增加例外，其他群仍保持拉黑；需要全部解除请使用主人指令。</p></div></div>
+  {% if not global_blacklist_runtime.get('available') %}
+    <div class="empty-state">等待 Windows 同步全局黑名单数据。</div>
+  {% else %}
+    <div class="summary-grid"><div><strong>{{ global_blacklist_runtime.get('total', 0) }}</strong><span>总记录</span></div><div><strong>{{ global_blacklist_runtime.get('active', 0) }}</strong><span>当前生效</span></div><div><strong>{{ global_blacklist_runtime.get('permanent', 0) }}</strong><span>永久</span></div><div><strong>{{ global_blacklist_runtime.get('temporary', 0) }}</strong><span>临时</span></div><div><strong>{{ global_blacklist_runtime.get('inactive', 0) }}</strong><span>已失效</span></div></div>
+     <form method="post" action="{{ group_prefix }}/{{ group_id }}/member-action" class="form-submit-row" data-global-blacklist-bulk-form>
+       <input type="hidden" name="csrf_token" value="{{ csrf_token }}"><input type="hidden" name="action" value="unblacklist_global"><input type="hidden" name="return_section" value="blacklist-data"><span class="muted">可勾选多条全局黑名单，只允许进入当前群，其他群仍保持拦截。</span><div data-global-blacklist-bulk-inputs></div><button class="button secondary small" type="submit" data-global-blacklist-bulk-submit disabled data-confirm="确定允许选中的全局黑名单进入当前群吗？">批量允许进入当前群</button>
+     </form>
+     <div class="table-wrap"><table><thead><tr><th>选择</th><th>QQ号</th><th>名称</th><th>状态</th><th>类型</th><th>原因</th><th>加入时间</th><th>到期时间</th><th>当前群</th><th>操作</th></tr></thead><tbody>{% for entry in global_blacklist_runtime.get('entries', []) %}<tr><td>{% if entry.get('active') and entry.get('user_id') and not entry.get('allowed_in_group') %}<input type="checkbox" value="{{ entry.get('user_id') }}" data-global-blacklist-select aria-label="选择全局黑名单 {{ entry.get('user_id') }}">{% else %}-{% endif %}</td><td>{{ entry.get('user_id') or '-' }}</td><td>{{ entry.get('user_name') or '-' }}</td><td>{{ '生效' if entry.get('active') else '已解除/过期' }}</td><td>{{ entry.get('ban_type') or '-' }}</td><td class="breakable">{{ entry.get('reason') or '-' }}</td><td>{{ entry.get('added_at_text') or '-' }}</td><td>{{ entry.get('expire_time_text') or '长期' }}</td><td>{{ '已允许进入' if entry.get('allowed_in_group') else '仍拦截' }}</td><td>{% if entry.get('active') and entry.get('user_id') and not entry.get('allowed_in_group') %}<form method="post" action="{{ group_prefix }}/{{ group_id }}/member-action" class="inline-form"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><input type="hidden" name="action" value="unblacklist_global"><input type="hidden" name="user_id" value="{{ entry.get('user_id') }}"><input type="hidden" name="return_section" value="blacklist-data"><button class="button secondary small" type="submit" data-confirm="确定允许该 QQ 号进入当前群吗？其他群仍保持全局拉黑。">允许进入当前群</button></form>{% else %}<span class="muted">无需操作</span>{% endif %}</td></tr>{% else %}<tr><td colspan="10" class="muted">暂无全局黑名单记录</td></tr>{% endfor %}</tbody></table></div>
+  {% endif %}
+</section>
+
+<section class="panel management-panel group-section-panel" id="stats-data" data-group-section-panel="stats-data">
+  <div class="section-heading"><div><h2>统计数据</h2><p>只读显示签到和积分汇总及前 100 名用户明细，网页不能修改 Windows 本地统计。</p></div></div>
+  {% if not stats_summary.available %}
+    <div class="empty-state">{{ stats_summary.message }}</div>
+  {% else %}
+    <div class="summary-grid">
+      <div><strong>{{ stats_summary.group.total_users }}</strong><span>统计用户</span></div>
+      <div><strong>{{ stats_summary.group.today_signins }}</strong><span>今日签到</span></div>
+      <div><strong>{{ stats_summary.group.total_points }}</strong><span>积分总数</span></div>
+      <div><strong>{{ stats_summary.group.avg_points }}</strong><span>平均积分</span></div>
+    </div>
+    <div class="table-wrap"><table><thead><tr><th>排名</th><th>QQ号</th><th>名称</th><th>积分</th><th>签到次数</th></tr></thead><tbody>
+      {% for entry in stats_summary.ranking %}<tr><td>{{ entry.rank }}</td><td>{{ entry.user_id }}</td><td>{{ entry.user_name or '-' }}</td><td>{{ entry.points }}</td><td>{{ entry.signin_count }}</td></tr>
+      {% else %}<tr><td colspan="5" class="muted">暂无统计排名</td></tr>{% endfor %}
+    </tbody></table></div>
+    <div class="section-heading compact-heading"><div><h3>SteamID 绑定</h3><p>绑定由 Windows 校验并保存。网页提交删除请求，Windows 在线后执行，不会覆盖其他成员的数据。</p></div></div>
+    <div class="table-wrap"><table><thead><tr><th>QQ号</th><th>名称</th><th>SteamID</th><th>签到次数</th><th>本月</th><th>本周</th><th>最近签到</th></tr></thead><tbody>
+      {% for entry in stats_summary.steam_bindings|default([]) %}<tr><td>{{ entry.user_id }}</td><td>{{ entry.user_name or '-' }}</td><td>{{ entry.steam_id }}</td><td>{{ entry.signin_count }}</td><td>{{ entry.monthly_count }}</td><td>{{ entry.weekly_count }}</td><td>{{ entry.last_signin or '-' }}</td></tr>
+      {% else %}<tr><td colspan="7" class="muted">暂无 SteamID 绑定记录</td></tr>{% endfor %}
+    </tbody></table></div>
+  {% endif %}
+</section>
+
+{% set members_runtime = runtime_panels.get('members', {}) %}
+{% set group_activity = runtime_panels.get('group_activity', {}) %}
+{% set member_rows = members_runtime.get('members', []) %}
+{% set member_valid_count = members_runtime.get('valid_count', member_rows|length) %}
+{% set message_feature_enabled = namespace(value=true) %}
+{% for feature_item in features if feature_item.spec.key == 'message_cache' %}{% set message_feature_enabled.value = feature_item['values'].get('enabled', true) %}{% endfor %}
+<section class="panel management-panel group-section-panel" id="member-management" data-group-section-panel="member-management" data-member-directory-url="{{ group_prefix }}/{{ group_id }}/members" data-member-updated-at="{{ members_runtime.get('updated_at', 0) }}" data-member-levels-pending="{{ '1' if members_runtime.get('levels_pending') else '0' }}">
+  <div class="section-heading"><div><h2>成员与群操作</h2><p>成员列表由 Windows 在线端按需拉取；活跃度按最近 30 天本地消息记录统计，不读取游戏数据库。禁言、拉黑和群名片修改会通过加密同步通道执行。点击刷新后网页会自动等待新名单；{% if members_runtime.get('partial') %}当前仅收到 Windows 实时接口返回的 {{ members_runtime.get('count', 0) }} 名，QQ 接口报告约 {{ members_runtime.get('expected_count', 0) }} 名；未拼接旧成员，请再次刷新获取完整名单。{% endif %}{% if members_runtime.get('levels_pending') %}QQ账号等级正在后台补充，完成后自动更新。{% else %}QQ账号等级显示 Windows 接口实际返回值。{% endif %}</p></div><form method="post" action="{{ group_prefix }}/{{ group_id }}/power"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><input type="hidden" name="power" value="{{ 'off' if powered_on else 'on' }}"><button class="button {{ 'danger' if powered_on else 'primary' }} small" type="submit" {% if not can_edit %}disabled{% endif %}>{{ '关机' if powered_on else '开机' }}</button></form></div>
+  <div class="inline-notice" role="status">消息先保存在 Windows 本地，再由后台静默增量同步到网页；网页不会刷新整页。群消息、私聊、文字、图片、表情、语音、视频、文件和转发都会保留类型与时间，历史上未缓存的消息无法从 QQ 补回。</div>
+  {% if group_activity.get('available') %}{% set group_inactive = group_activity.get('inactive_seconds', 0) %}<div class="inline-notice" role="status"><strong>本群活跃度</strong> · 近 {{ group_activity.get('window_days', 30) }} 天 {{ group_activity.get('message_count', 0) }} 条消息 · {{ group_activity.get('active_members', 0) }} 名成员发言 · 最后发言：{% if not group_activity.get('last_message_at') %}暂无记录{% elif group_inactive < 3600 %}刚刚{% elif group_inactive < 86400 %}{{ group_inactive // 3600 }} 小时前{% else %}{{ group_inactive // 86400 }} 天前{% endif %}</div>{% endif %}
+  {% if request.app.state.settings.data_mode == 'remote' %}
+  <form method="post" action="{{ group_prefix }}/{{ group_id }}/member-action" class="management-form" data-group-draft-form data-member-action-form>
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <fieldset {% if not can_edit %}disabled{% endif %}>
+      <div class="form-grid two">
+<label>筛选成员<input type="search" data-member-filter placeholder="输入 QQ 号、昵称、群名片、身份或活跃度"><small>可按 QQ号、QQ昵称、群名片、身份、QQ等级或活跃度筛选。</small></label>
+ <label>群成员<select name="user_id" data-member-select multiple size="8" required><option value="" disabled>{{ '正在载入成员…' if member_rows else ('已收到 ' ~ members_runtime.get('count') ~ ' 人，请搜索选择' if members_runtime.get('count', 0) else '等待 Windows 同步成员') }}</option></select><small>支持多选；可用 Ctrl/Shift 选择多名成员，操作会一次提交并逐个执行。</small></label>
+        <label>禁言秒数<input name="duration" type="number" min="0" max="2592000" value="300"><small>0 表示解除禁言，最长 30 天。</small></label>
+      </div>
+      <label>群名片<input name="content" maxlength="60" placeholder="仅在设置群名片时填写"><small>支持 QQ 群名片，不会修改成员 QQ 昵称。</small></label>
+      <div class="form-submit-row"><small>已接收 {{ members_runtime.get('count', 0) }} 人，可选 {{ member_valid_count }} 人；{% if members_runtime.get('updated_at') %}最近刷新 {{ members_runtime.get('updated_at_text', '已同步') }}{% else %}尚未获取{% endif %}。</small><button class="button secondary" type="submit" name="action" value="refresh_members" formnovalidate>刷新成员列表</button><button class="button secondary" type="submit" name="action" value="mute_member">禁言</button><button class="button secondary" type="submit" name="action" value="unmute_member">解除禁言</button><button class="button danger" type="submit" name="action" value="kick_member" data-confirm="确定踢出所选成员吗？">踢出</button><button class="button secondary" type="submit" name="action" value="blacklist_member">拉黑</button><button class="button secondary" type="submit" name="action" value="set_member_content">设置群名片</button><button class="button danger" type="submit" name="action" value="unbind_steam_id" data-confirm="确定删除所选成员的 SteamID 绑定吗？">删除 SteamID 绑定</button></div>
+      {% if members_runtime.get('message') %}<div class="inline-notice warning" role="status">{{ members_runtime.get('message') }}</div>{% endif %}
+    </fieldset>
+  </form>
+  <script type="application/json" data-member-directory-data>[]</script>
+  <div class="member-directory-toolbar" data-member-directory-toolbar><label>搜索<input type="search" data-member-directory-search placeholder="QQ号、昵称、群名片或身份"></label><label>筛选<select data-member-directory-filter><option value="all">全部成员</option><option value="active">近30天有发言</option><option value="silent">近30天未发言</option><option value="muted">禁言中</option><option value="admin">群主/管理员</option></select></label><label>排序<select data-member-directory-sort><option value="activity_desc">活跃度：高到低</option><option value="activity_asc">活跃度：低到高</option><option value="last_desc">最后发言：新到旧</option><option value="last_asc">最后发言：旧到新</option><option value="qq_level_desc">QQ等级：高到低</option><option value="qq_level_asc">QQ等级：低到高</option></select></label></div>
+  <div class="table-wrap member-directory" data-page-size="20"><table><thead><tr><th>QQ号</th><th>QQ昵称</th><th>群名片</th><th>身份</th><th>QQ等级</th><th>群等级</th><th>头衔</th><th>入群时间</th><th>发言统计</th><th>最近消息</th><th>最后发言</th><th>禁言到</th><th>操作</th></tr></thead><tbody><tr><td colspan="13" class="muted">正在载入成员列表…</td></tr></tbody></table></div>
+  <div class="collection-pager pagination member-directory-pager" data-member-directory-pager hidden aria-label="成员列表分页"></div>
+  <div class="member-message-modal" data-member-message-view hidden role="dialog" aria-modal="true" aria-labelledby="member-message-modal-title" aria-live="polite">
+    <button type="button" class="member-message-modal-backdrop" data-member-message-clear aria-label="关闭成员消息窗口"></button>
+    <section class="member-message-modal-dialog" tabindex="-1">
+      <div class="section-heading compact-heading"><div><h3 id="member-message-modal-title" data-member-message-title>成员消息记录</h3><p data-member-message-status>选择成员后查看 Windows 已同步的文字、图片、表情、语音、视频、文件和转发记录。</p></div><button type="button" class="button ghost small" data-member-message-clear>关闭</button></div>
+      <div class="table-wrap"><table><thead><tr><th>时间</th><th>内容</th><th>媒体</th><th>状态</th><th>撤回信息</th></tr></thead><tbody data-member-message-body><tr><td colspan="5" class="muted">请选择成员</td></tr></tbody></table></div>
+    </section>
+  </div>
+  {% else %}<div class="empty-state">当前是本地网页模式，成员操作请直接使用 Windows 端群管指令。</div>{% endif %}
+</section>
+<section class="panel management-panel group-section-panel" id="group-message-history" data-group-section-panel="group-message-history" data-group-message-history-url="{{ group_prefix }}/{{ group_id }}/messages">
+  <div class="section-heading"><div><h2>群聊天记录</h2><p>模拟 QQ 群聊天显示：保留成员和机器人发言、图片、表情、语音、视频、文件、撤回状态及群管操作。记录先写入 Windows 本地缓存，再按消息时间与唯一消息 ID 静默增量上传。</p></div><button type="button" class="button secondary small" data-group-message-reload>刷新显示</button></div>
+  <div class="inline-notice" data-group-message-status role="status">正在读取已保存的群聊天记录…</div>
+  <div class="group-message-toolbar"><label>搜索<input type="search" data-group-message-search placeholder="成员、QQ号、文字或媒体类型"></label><label>来源<select data-group-message-direction><option value="">全部群聊天</option><option value="inbound">成员发言</option><option value="outbound">机器人发送</option></select></label><label>类型<select data-group-message-type><option value="">全部类型</option><option value="text">文字</option><option value="image">图片</option><option value="face">表情</option><option value="record">语音</option><option value="audio">语音</option><option value="video">视频</option><option value="file">文件</option><option value="forward">转发</option></select></label><label>状态<select data-group-message-state><option value="">全部状态</option><option value="normal">正常</option><option value="recalled">已撤回</option></select></label><label>排序<select data-group-message-sort><option value="desc">最新在前</option><option value="asc">最早在前</option></select></label></div>
+  <div class="group-chat-history" data-group-message-list aria-live="polite"><div class="empty-state">等待 Windows 同步首条群消息。</div></div>
+</section>
+{% set audit_runtime = runtime_panels.get('audit', {}) %}
+{% set kick_runtime = runtime_panels.get('kick', {}) %}
+{% set mute_runtime = runtime_panels.get('mute', {}) %}
+{% set recall_runtime = runtime_panels.get('recall', {}) %}
+{% set cache_runtime = runtime_panels.get('message_cache', {}) %}
+{% set blacklist_runtime = runtime_panels.get('blacklist', {}) %}
+{% set operations_runtime = runtime_panels.get('operations', {}) %}
+{% set error_runtime = runtime_panels.get('errors', {}) %}
+<section class="panel management-panel group-section-panel" id="runtime-data" data-group-section-panel="runtime-data"
+  data-runtime-status-url="{{ group_prefix }}/{{ group_id }}/runtime-status">
+  <div class="section-heading"><div><h2>Windows 运行记录</h2><p>只读显示机器人本地运行数据。Windows 写入后网页自动更新，不会整页刷新，也不会覆盖正在编辑的配置。</p></div><strong class="runtime-live-badge" data-runtime-live-badge>自动同步</strong></div>
+  {% if not (audit_runtime.get('available') or kick_runtime.get('available') or mute_runtime.get('available') or recall_runtime.get('available') or cache_runtime.get('available') or blacklist_runtime.get('available') or operations_runtime.get('available') or error_runtime.get('available')) %}
+  <div class="empty-state">等待 Windows 同步运行记录。</div>
+  <div class="runtime-panel-grid">
+    <div class="runtime-panel-block"><h3>群消息缓存</h3><p>Windows 首次上传消息后会自动显示，不需要刷新网页。媒体消息会保留类型、时间及撤回状态。</p>
+      <div class="table-wrap message-cache-table" data-page-size="20"><table><thead><tr><th>时间</th><th>QQ号</th><th>昵称</th><th>内容</th><th>媒体类型</th><th>状态</th><th>撤回信息</th></tr></thead>
+      <tbody><tr><td colspan="7" class="muted">等待 Windows 同步消息记录</td></tr></tbody></table></div>
+    </div>
+  </div>
+  {% else %}
+  <div class="summary-grid runtime-summary-grid">
+    <div><strong>{{ audit_runtime.get('pending_count', 0) }}</strong><span>待审核</span></div>
+    <div><strong>{{ audit_runtime.get('total_processed', 0) }}</strong><span>审核处理</span></div>
+    <div><strong>{{ kick_runtime.get('today_kicks', 0) }}</strong><span>今日踢出</span></div>
+    <div><strong>{{ mute_runtime.get('currently_muted', 0) }}</strong><span>当前禁言</span></div>
+    <div><strong>{{ recall_runtime.get('total_recalls', 0) }}</strong><span>累计撤回</span></div>
+    <div><strong>{{ blacklist_runtime.get('active', 0) }}</strong><span>生效黑名单</span></div>
+    <div><strong>{{ operations_runtime.get('count', 0) }}</strong><span>最近操作</span></div>
+    <div><strong class="runtime-message-count">{{ cache_runtime.get('count', 0) }}</strong><span>最近消息</span></div>
+    <div><strong>{{ error_runtime.get('count', 0) }}</strong><span>功能错误</span></div>
+  </div>
+  <div class="runtime-panel-grid">
+    <div class="runtime-panel-block"><h3>入群审核</h3><p>通过 {{ audit_runtime.get('approved', 0) }} · 拒绝 {{ audit_runtime.get('rejected', 0) }} · 活跃验证 {{ audit_runtime.get('active_challenges', 0) }}</p>
+      <div class="table-wrap"><table><thead><tr><th>成员</th><th>动作</th><th>原因</th><th>时间</th></tr></thead><tbody>{% for row in audit_runtime.get('recent', [])[:10] %}<tr><td>{{ row.get('user_name') or row.get('user_id') or '-' }}</td><td>{{ row.get('action') or '-' }}</td><td class="breakable">{{ row.get('reason') or '-' }}</td><td>{{ row.get('timestamp_text') or '-' }}</td></tr>{% else %}<tr><td colspan="4" class="muted">暂无审核记录</td></tr>{% endfor %}</tbody></table></div>
+    </div>
+    <div class="runtime-panel-block"><h3>踢出与禁言</h3><p>累计踢出 {{ kick_runtime.get('total_kicks', 0) }} · 今日 {{ kick_runtime.get('today_kicks', 0) }} · 当前禁言 {{ mute_runtime.get('currently_muted', 0) }}</p>
+      <div class="table-wrap"><table><thead><tr><th>成员</th><th>QQ号</th><th>状态</th><th>次数/等级</th><th>原因</th><th>时间</th></tr></thead><tbody>{% for row in kick_runtime.get('records', [])[:8] %}<tr><td>{{ row.get('user_name') or '-' }}</td><td>{{ row.get('user_id') or '-' }}</td><td>已踢出</td><td>{{ row.get('count', 1) }}</td><td class="breakable">{{ row.get('reason') or '-' }}</td><td>{{ row.get('last_kicked_text') or '-' }}</td></tr>{% endfor %}{% for row in mute_runtime.get('active', [])[:8] %}<tr><td>{{ row.get('user_name') or '-' }}</td><td>{{ row.get('user_id') or '-' }}</td><td>禁言中</td><td>等级 {{ row.get('mute_level', 1) }} · {{ row.get('duration', 0) }} 秒</td><td class="breakable">{{ row.get('reason') or '-' }}</td><td>{{ row.get('expire_text') or '永久' }}</td></tr>{% endfor %}{% if not kick_runtime.get('records') and not mute_runtime.get('active') %}<tr><td colspan="6" class="muted">暂无踢出或禁言记录</td>{% endif %}</tbody></table></div>
+    </div>
+    <div class="runtime-panel-block"><h3>撤回记录</h3><p>关键词 {{ recall_runtime.get('keywords_count', 0) }} · 正则 {{ recall_runtime.get('regex_count', 0) }} · 自身撤回 {{ '✅️' if recall_runtime.get('self_recall_enabled') else '❌️' }}</p>
+      <div class="table-wrap"><table><thead><tr><th>成员</th><th>QQ号</th><th>消息</th><th>原因</th><th>内容</th><th>时间</th></tr></thead><tbody>{% for row in recall_runtime.get('recent', [])[:10] %}<tr><td>{{ row.get('user_name') or '-' }}</td><td>{{ row.get('user_id') or '-' }}</td><td>{{ row.get('message_id') or '-' }}</td><td>{{ row.get('reason') or '-' }}</td><td class="breakable">{{ row.get('content') or '-' }}</td><td>{{ row.get('recalled_at_text') or '-' }}</td></tr>{% else %}<tr><td colspan="6" class="muted">暂无撤回记录</td></tr>{% endfor %}</tbody></table></div>
+    </div>
+    <div class="runtime-panel-block"><h3>黑名单</h3><p>当前生效 {{ blacklist_runtime.get('active', 0) }} 人 · 历史记录 {{ blacklist_runtime.get('total', 0) }} 条。</p>
+      <div class="table-wrap"><table><thead><tr><th>成员</th><th>QQ号</th><th>状态</th><th>类型</th><th>原因</th><th>到期</th></tr></thead><tbody>{% for row in blacklist_runtime.get('entries', [])[:12] %}<tr><td>{{ row.get('user_name') or '-' }}</td><td>{{ row.get('user_id') or '-' }}</td><td>{{ '生效' if row.get('active') else '已失效' }}</td><td>{{ row.get('ban_type') or '-' }}</td><td class="breakable">{{ row.get('reason') or '-' }}</td><td>{{ row.get('expire_time_text') or '长期' }}</td></tr>{% else %}<tr><td colspan="6" class="muted">暂无黑名单记录</td></tr>{% endfor %}</tbody></table></div>
+    </div>
+    <div class="runtime-panel-block"><h3>群消息缓存</h3><p>已同步 {{ cache_runtime.get('count', 0) }} 条。点击成员列表中的“查看消息”可筛选该成员；文字、表情、图片、语音、视频、文件和转发会显示摘要，平台提供的图片链接可直接预览。</p>
+      <div class="table-wrap message-cache-table" data-page-size="20"><table><thead><tr><th>时间</th><th>QQ号</th><th>昵称</th><th>内容</th><th>媒体类型</th><th>状态</th><th>撤回信息</th></tr></thead><tbody>{% for row in cache_runtime.get('records', [])[:50] %}<tr data-message-user-id="{{ row.get('user_id') or '' }}" data-message-types="{{ row.get('message_types') or '' }}"><td>{{ row.get('timestamp_text') or '-' }}</td><td>{{ row.get('user_id') or '-' }}</td><td>{{ row.get('user_name') or '-' }}</td><td class="breakable">{{ row.get('content') or ('[图片]' if row.get('has_image') else '-') }}</td><td>{% if row.get('message_types') %}{% for kind in row.get('message_types').split(',') if kind %}{{ {'face':'表情','image':'图片','record':'语音','video':'视频','file':'文件','forward':'转发','node':'转发','at':'艾特','text':'文字'}.get(kind, kind) }}{% if not loop.last %}、{% endif %}{% endfor %}{% else %}文字{% endif %}{% if row.get('image_count') %} · 图片 {{ row.get('image_count') }}{% endif %}{% if row.get('record_count') %} · 语音 {{ row.get('record_count') }}{% endif %}{% if row.get('video_count') %} · 视频 {{ row.get('video_count') }}{% endif %}{% if row.get('file_count') %} · 文件 {{ row.get('file_count') }}{% endif %}{% if row.get('forward_count') %} · 转发 {{ row.get('forward_count') }}{% endif %}</td><td>{{ '已撤回' if row.get('recalled') else '正常' }}</td><td>{% if row.get('recalled') %}{{ row.get('recall_reason') or '系统撤回' }}{% if row.get('recalled_at_text') %}<br><small>{{ row.get('recalled_at_text') }}</small>{% endif %}{% else %}-{% endif %}</td></tr>{% else %}<tr><td colspan="7" class="muted">暂无消息缓存。只有 Windows 已开启群消息记录并完成同步后，才会显示新消息；历史上未被缓存的消息无法从 QQ 服务器补回。</td></tr>{% endfor %}</tbody></table></div>
+    </div>
+    <div class="runtime-panel-block"><h3>功能错误日志</h3><p>Windows 执行失败时记录功能、错误码和简短原因；密码、路径和完整堆栈不会上传。</p>
+      <div class="table-wrap"><table><thead><tr><th>时间</th><th>功能</th><th>操作</th><th>错误码</th><th>原因</th><th>次数</th></tr></thead><tbody>{% for row in error_runtime.get('recent', [])[:30] %}<tr><td>{{ row.get('timestamp_text') or '-' }}</td><td>{{ row.get('feature') or '-' }}</td><td>{{ row.get('operation') or '-' }}</td><td><code>{{ row.get('code') or '-' }}</code></td><td class="breakable">{{ row.get('message') or '-' }}</td><td>{{ row.get('count', 1) }}</td></tr>{% else %}<tr><td colspan="6" class="muted">暂无功能错误记录</td></tr>{% endfor %}</tbody></table></div>
+    </div>
+    <div class="runtime-panel-block"><h3>群管操作记录</h3><p>与群聊天、终端收发分开保存。按功能分类查看 Windows 已执行的审核、成员处理、黑名单、撤回与定时任务。</p>
+      <div class="collection-toolbar compact-toolbar"><label>功能分类<select data-operation-category><option value="">全部功能</option><option value="入群审核">入群审核</option><option value="成员处理">成员处理</option><option value="黑名单">黑名单</option><option value="撤回">撤回</option><option value="定时任务">定时任务</option><option value="其他">其他</option></select></label><small data-operation-status>Windows 新操作会自动显示。</small></div>
+      <div class="table-wrap"><table><thead><tr><th>时间</th><th>分类</th><th>操作人</th><th>动作</th><th>目标成员</th><th>原因</th></tr></thead><tbody data-runtime-operation-list>{% for row in operations_runtime.get('recent', [])[:50] %}<tr><td>{{ row.get('timestamp_text') or '-' }}</td><td>{{ row.get('category') or '其他' }}</td><td>{{ row.get('operator_name') or row.get('operator_id') or '-' }}</td><td>{{ row.get('action') or '-' }}</td><td>{{ row.get('target_name') or row.get('target_id') or '-' }}</td><td class="breakable">{{ row.get('reason') or '-' }}</td></tr>{% else %}<tr><td colspan="6" class="muted">暂无群管操作记录</td></tr>{% endfor %}</tbody></table></div>
+    </div>
+  </div>
+  {% endif %}
+</section>
+
+{% macro entertainment_panel(item, section, panel_id, title, description, field_keys, group_prefix, group_id, csrf_token, can_edit) -%}
+<article class="feature-card group-section-panel entertainment-panel" id="{{ panel_id }}" data-group-section-panel="{{ panel_id }}">
+  <div class="feature-title">
+    <div><h3>{{ title }}</h3><p>{{ description }}</p></div>
+    {% if item['values'].get('enabled') %}<span class="pill active">✅️ 娱乐总开关已开启</span>{% else %}<span class="pill">❌️ 娱乐总开关已关闭</span>{% endif %}
+  </div>
+  <form method="post" action="{{ group_prefix }}/{{ group_id }}/features/entertainment" class="settings-form entertainment-form" data-feature-form data-group-draft-form>
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <input type="hidden" name="entertainment_section" value="{{ section }}">
+    <fieldset {% if not can_edit %}disabled{% endif %}>
+      <div class="entertainment-settings-grid">
+      {% for field in item.spec.fields if field.key in field_keys %}
+        {% set value = item['values'].get(field.key, field.default) %}
+        {% if field.kind == 'bool' %}
+        <label class="switch-row"><span><strong>{{ field.label }}</strong>{% if field.help %}<small>{{ field.help }}</small>{% endif %}</span><input type="checkbox" name="{{ field.key }}" value="on" {% if value %}checked{% endif %}></label>
+        {% elif field.kind == 'choice' %}
+        <label>{{ field.label }}<select name="{{ field.key }}">{% for option_value, option_label in field.choices %}<option value="{{ option_value }}" {% if value == option_value %}selected{% endif %}>{{ option_label }}</option>{% endfor %}</select>{% if field.help %}<small>{{ field.help }}</small>{% endif %}</label>
+        {% elif field.kind == 'multichoice' %}
+        {% set selected_values = value if value is iterable and value is not string else [value] %}
+        <div class="multi-choice-field"><strong>{{ field.label }}</strong><div class="multi-choice-options">{% for option_value, option_label in field.choices %}<label class="checkbox-box"><input type="checkbox" name="{{ field.key }}" value="{{ option_value }}" {% if option_value in selected_values %}checked{% endif %}> {{ option_label }}</label>{% endfor %}</div>{% if field.help %}<small>{{ field.help }}</small>{% endif %}</div>
+        {% elif field.kind in ['text', 'list'] %}
+        <label>{{ field.label }}<textarea name="{{ field.key }}" rows="{{ 4 if field.kind == 'list' else 3 }}" maxlength="{{ field.max_length }}">{{ display_value(field, value) }}</textarea>{% if field.help %}<small>{{ field.help }}</small>{% endif %}</label>
+        {% elif field.kind == 'int' %}
+        <label>{{ field.label }}<input type="number" name="{{ field.key }}" value="{{ value }}" min="{{ field.minimum }}" max="{{ field.maximum }}" required>{% if field.help %}<small>{{ field.help }}</small>{% endif %}</label>
+        {% else %}
+        <label>{{ field.label }}<input name="{{ field.key }}" value="{{ value }}" maxlength="{{ field.max_length }}" {% if field.default %}required{% endif %}>{% if field.help %}<small>{{ field.help }}</small>{% endif %}</label>
+        {% endif %}
+      {% endfor %}
+      </div>
+      <div class="form-submit-row"><small>只保存“{{ title }}”这一组设置，不会修改其他娱乐功能。</small><button class="button secondary" type="submit">保存{{ title }}</button></div>
+    </fieldset>
+  </form>
+</article>
+{%- endmacro %}
+
+{% if entertainment_feature.item %}
+  {{ entertainment_panel(entertainment_feature.item, 'overview', 'feature-entertainment', '娱乐总设置', '控制娱乐功能总开关和成员公共冷却。', ['enabled', 'cooldown'], group_prefix, group_id, csrf_token, can_edit) }}
+  {{ entertainment_panel(entertainment_feature.item, 'time', 'entertainment-time', '时间命令', '单独启用当前时间命令并设置命令别名。', ['time_enabled', 'time_command'], group_prefix, group_id, csrf_token, can_edit) }}
+  {{ entertainment_panel(entertainment_feature.item, 'dice', 'entertainment-dice', '骰子', '设置骰子开关、命令别名和最大面数。', ['dice_enabled', 'dice_command', 'max_sides'], group_prefix, group_id, csrf_token, can_edit) }}
+  {{ entertainment_panel(entertainment_feature.item, 'rps', 'entertainment-rps', '猜拳', '单独启用猜拳并设置命令别名。', ['rps_enabled', 'rps_command'], group_prefix, group_id, csrf_token, can_edit) }}
+  {{ entertainment_panel(entertainment_feature.item, 'random', 'entertainment-random', '随机选择', '设置随机选择开关、命令别名和选项数量上限。', ['random_enabled', 'random_command', 'max_options'], group_prefix, group_id, csrf_token, can_edit) }}
+  {{ entertainment_panel(entertainment_feature.item, 'coin', 'entertainment-coin', '抛硬币', '设置抛硬币开关和命令别名。', ['coin_enabled', 'coin_command'], group_prefix, group_id, csrf_token, can_edit) }}
+  {{ entertainment_panel(entertainment_feature.item, 'fortune', 'entertainment-fortune', '今日运势', '设置今日运势开关和命令别名。', ['fortune_enabled', 'fortune_command'], group_prefix, group_id, csrf_token, can_edit) }}
+  {{ entertainment_panel(entertainment_feature.item, 'luck', 'entertainment-luck', '幸运数字', '按群、成员和日期生成固定的每日幸运数字，不保存个人资料。', ['luck_enabled', 'luck_command'], group_prefix, group_id, csrf_token, can_edit) }}
+  {{ entertainment_panel(entertainment_feature.item, 'answer', 'entertainment-answer', '答案之书', '输入问题即可得到一条随机建议；不保存提问内容或成员资料。', ['answer_enabled', 'answer_command'], group_prefix, group_id, csrf_token, can_edit) }}
+  {{ entertainment_panel(entertainment_feature.item, 'like', 'entertainment-like', 'QQ 点赞', '设置点赞开关、命令别名和每日次数上限。', ['like_enabled', 'like_command', 'like_daily_limit'], group_prefix, group_id, csrf_token, can_edit) }}
+  {{ entertainment_panel(entertainment_feature.item, 'music', 'entertainment-music', '点歌', '设置点歌开关、命令、音乐源和候选等待时间。', ['music_enabled', 'music_sources', 'music_default_source', 'music_command', 'music_selection_timeout'], group_prefix, group_id, csrf_token, can_edit) }}
+  {{ entertainment_panel(entertainment_feature.item, 'video', 'entertainment-video', '视频搜索', '单独启用视频搜索并设置命令别名。', ['video_enabled', 'video_command'], group_prefix, group_id, csrf_token, can_edit) }}
+{% endif %}
+
+{% for item in features if item.spec.key not in managed_feature_keys and item.spec.key != 'entertainment' %}
+    <article class="feature-card group-section-panel" id="feature-{{ item.spec.key }}" data-group-section-panel="feature-{{ item.spec.key }}">
+      <div class="feature-title">
+        <div><h3>{{ item.spec.label }}</h3><p>{{ item.spec.description }}</p></div>
+        {# ``item`` is a dict. Use bracket access because ``values`` is also
+           a dict method; dotted access resolves to ``dict.values`` in Jinja. #}
+        {% if item['values'].get('enabled') %}<span class="pill active">✅️ 已开启</span>{% else %}<span class="pill">❌️ 已关闭</span>{% endif %}
+      </div>
+      {% if item.spec.key == 'group_config' %}
+      {% set group_settings = item['values'] %}
+      {% set group_tags = group_settings.get('tags') or [] %}
+      <div class="summary-grid group-config-summary" aria-label="当前群基础资料">
+        <div><strong>{{ group_settings.get('nickname') or ('群 ' ~ group_id) }}</strong><span>群显示名称</span></div>
+        <div><strong>{{ group_tags if group_tags is string else (group_tags|join('、') or '未设置') }}</strong><span>群标签</span></div>
+        <div><strong>{{ group_settings.get('priority', 0) }}</strong><span>配置优先级</span></div>
+        <div><strong>{{ group_settings.get('timezone') or 'Asia/Shanghai' }}</strong><span>群时区</span></div>
+      </div>
+      <div class="feature-help-grid group-config-guide" aria-label="群设置说明">
+        <div class="feature-help-item"><strong>用于什么</strong><p>维护本群的显示名称、标签、排序优先级、备注和时区，方便网页识别与定时任务显示；不会修改 QQ 群名称。</p></div>
+        <div class="feature-help-item"><strong>如何生效</strong><p>只提交本卡片底部的“保存群设置”才会生成本群新版本，并由 Windows 下一次心跳拉取；同群多机器人可填写“机器人QQ=优先级”，数值最高者执行定时任务。</p></div>
+        <div class="feature-help-item"><strong>群成员资料</strong><p>群名片使用 /设置群员名称，自己设置称号使用 /自动授予称号 称号，指定成员使用 /授予称号；自动授予称号默认关闭。先发送 /群资料状态 确认机器人群主与 NapCat PacketBackend 状态。</p></div>
+      </div>
+      {% endif %}
+      {% if item.spec.key == 'game_servers' %}
+      {% set server_values = item['values'] %}
+      {% set server_profiles = server_values.get('profiles') or [] %}
+      <div class="game-server-manager">
+        <div class="integration-status-grid">
+          <div class="integration-status-item"><strong>已配置服务器</strong><span>{{ server_profiles|length }} 台</span><small>每台服务器独立保存 FTP、数据库与 WebSocket。</small></div>
+          <div class="integration-status-item"><strong>当前使用</strong><span>{{ active_integration.item.name if active_integration.item else '未选择' }}</span><small>签到、SteamID 与 SCUM 查询按对应服务器执行。</small></div>
+        </div>
+        <div class="form-submit-row"><small>服务器配置已统一到独立页面，避免游戏连接、FTP 和数据库重复维护。网页保存后由 Windows 拉取并实际执行。</small><a class="button primary" href="{{ group_prefix }}/{{ group_id }}/integrations">管理游戏服务器</a></div>
+      </div>
+      {% else %}
+      <form method="post" action="{{ group_prefix }}/{{ group_id }}/features/{{ item.spec.key }}" class="settings-form" data-feature-form data-group-draft-form>
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <fieldset {% if not can_edit %}disabled{% endif %}>
+        {% if item.spec.key == 'entertainment' %}<div class="entertainment-settings-grid">{% endif %}
+        {% for field in item.spec.fields %}
+          {% set value = item['values'].get(field.key, field.default) %}
+          {% if item.spec.key == 'entertainment' and field.key == 'dice_enabled' %}<div class="feature-subsection" id="entertainment-dice"><strong>骰子与随机</strong><small>设置骰子面数、随机选项数量和成员冷却。</small></div>{% endif %}
+          {% if item.spec.key == 'entertainment' and field.key == 'like_enabled' %}<div class="feature-subsection" id="entertainment-social"><strong>点赞与互动</strong><small>点赞、时间和视频搜索使用本群独立开关。</small></div>{% endif %}
+          {% if item.spec.key == 'entertainment' and field.key == 'music_enabled' %}<div class="feature-subsection" id="entertainment-music"><strong>点歌与音乐源</strong><small>先选择音乐平台，再设置默认平台和选歌等待时间。</small></div>{% endif %}
+          {% if field.kind == 'bool' %}
+          <label class="switch-row"><span><strong>{{ field.label }}</strong>{% if field.help %}<small>{{ field.help }}</small>{% endif %}</span><input type="checkbox" name="{{ field.key }}" value="on" {% if value %}checked{% endif %}></label>
+          {% elif field.kind == 'choice' %}
+          <label>{{ field.label }}
+            <select name="{{ field.key }}">
+              {% for option_value, option_label in field.choices %}<option value="{{ option_value }}" {% if value == option_value %}selected{% endif %}>{{ option_label }}</option>{% endfor %}
+            </select>
+            {% if field.help %}<small>{{ field.help }}</small>{% endif %}
+          </label>
+          {% elif field.kind == 'multichoice' %}
+          {% set selected_values = value if value is iterable and value is not string else [value] %}
+          <div class="multi-choice-field"><strong>{{ field.label }}</strong><div class="multi-choice-options">{% for option_value, option_label in field.choices %}<label class="checkbox-box"><input type="checkbox" name="{{ field.key }}" value="{{ option_value }}" {% if option_value in selected_values %}checked{% endif %}> {{ option_label }}</label>{% endfor %}</div>{% if field.help %}<small>{{ field.help }}</small>{% endif %}</div>
+          {% elif (item.spec.key == 'stats' and field.key == 'signin_profiles') or (item.spec.key == 'lottery' and field.key == 'campaigns') %}
+          <textarea name="{{ field.key }}" maxlength="{{ field.max_length }}" hidden>{{ display_value(field, value) }}</textarea>
+          {% elif field.kind in ['text', 'list'] %}
+          <label>{{ field.label }}<textarea name="{{ field.key }}" rows="{{ 4 if field.kind == 'list' else 3 }}" maxlength="{{ field.max_length }}">{{ display_value(field, value) }}</textarea>{% if field.help %}<small>{{ field.help }}</small>{% endif %}</label>
+          {% elif field.kind == 'int' %}
+          <label>{{ field.label }}<input type="number" name="{{ field.key }}" value="{{ value }}" min="{{ field.minimum }}" max="{{ field.maximum }}" required>{% if field.help %}<small>{{ field.help }}</small>{% endif %}</label>
+          {% else %}
+          <label>{{ field.label }}<input name="{{ field.key }}" value="{{ value }}" maxlength="{{ field.max_length }}" {% if field.default %}required{% endif %}>{% if field.help %}<small>{{ field.help }}</small>{% endif %}{% if item.spec.key == 'group_config' and field.key == 'member_name_prefix' %}<button type="button" class="button ghost small" data-clear-member-prefix>清除前缀并恢复个人名称</button>{% endif %}</label>
+          {% endif %}
+        {% endfor %}
+        {% if item.spec.key == 'entertainment' %}</div>{% endif %}
+        {% if item.spec.key in ['game_commands', 'stats'] %}
+        <div class="license-warning neutral game-transport-status">
+          <strong>用户端可调用通道：{% if game_transport.callable %}后台 WebSocket 已就绪{% else %}后台 WebSocket 未就绪{% endif %}</strong>
+          <span>{{ game_transport.reason }}{% if game_transport.callable %} 当前调用来源：{{ game_transport.source }}；后台连接地址、同步令牌和 API Key 仅后台与 Windows 执行端可见。{% endif %}</span>
+        </div>
+        {% endif %}
+        <div class="form-submit-row">
+          <small>{% if item.spec.key == 'scum' %}自定义指令会覆盖对应默认指令；保存后只执行当前指令。恢复默认只清除命令覆盖，不删除群组数据。{% elif item.spec.key == 'game_commands' %}默认包含金币和生成僵尸模板；恢复默认不会删除 Steam 绑定、签到记录、服务器地址或密码。{% else %}保存后等待 Windows 同步。{% endif %}</small>
+          <div class="row-actions">
+            <button class="button secondary" type="submit">保存{{ item.spec.label }}</button>
+            {% if item.spec.key == 'scum' %}<button class="button secondary" type="submit" formmethod="post" formaction="{{ group_prefix }}/{{ group_id }}/features/scum/reset" formnovalidate {% if not can_edit %}disabled{% endif %}>恢复默认指令</button>{% endif %}
+            {% if item.spec.key == 'game_commands' %}<button class="button secondary" type="submit" formmethod="post" formaction="{{ group_prefix }}/{{ group_id }}/features/game/reset" formnovalidate {% if not can_edit %}disabled{% endif %}>恢复默认游戏配置</button>{% endif %}
+          </div>
+        </div>
+        </fieldset>
+      </form>
+      {% endif %}
+    </article>
+  {% endfor %}
+
+{% set signin_profiles = signin_profiles|default([]) %}
+<section class="panel management-panel group-section-panel" id="signin-profiles" data-group-section-panel="signin-profiles">
+  <div class="section-heading"><div><h2>多个签到方案</h2><p>每个方案有独立命令、签到方式、周期和奖励。新建群或恢复默认游戏配置会提供一条禁用的 SteamID 示例；确认数据库或 WebSocket 后再启用。真实 SteamID 绑定不会自动生成。</p></div></div>
+  <div class="collection-toolbar">
+    <label>当前签到方案
+      <select data-collection-picker="signin-profiles" aria-controls="signin-profile-items">
+        <option value="__new__">＋ 新增签到方案</option>
+        {% for profile in signin_profiles %}<option value="{{ profile.id }}">{{ profile.name or profile.id }}（{{ profile.command }}）</option>{% endfor %}
+      </select>
+    </label>
+    <small>选择后只显示对应方案；新增和编辑不会混在一起。</small>
+  </div>
+  <div data-collection-create="signin-profiles">
+  <form method="post" action="{{ group_prefix }}/{{ group_id }}/signin-profiles" class="management-form" data-group-draft-form>
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}"><input type="hidden" name="operation" value="add">
+    <fieldset {% if not can_edit %}disabled{% endif %}>
+      <div class="form-grid four">
+        <label>方案 ID（可留空自动生成）<input name="profile_id" maxlength="48" pattern="[A-Za-z0-9_-]{1,48}" placeholder="daily"></label>
+        <label>方案名称<input name="name" maxlength="80" placeholder="每日签到" required></label>
+        <label>签到命令<input name="command" maxlength="32" placeholder="签到1" required><small>不带 /，每个方案不能重复。</small></label>
+        <label>签到方式<select name="mode"><option value="basic">普通签到</option><option value="steam">SteamID 签到</option></select></label>
+        <label>签到周期<select name="schedule"><option value="daily">每日</option><option value="weekly">每周</option><option value="monthly">每月</option><option value="streak">连续签到</option></select></label>
+        <label>基础奖励<input name="base_reward" type="number" min="0" max="1000000" placeholder="留空继承默认奖励"><small>填 0 表示该方案不奖励。</small></label>
+        <label>连续 3 天奖励<input name="reward_3_days" type="number" min="0" max="1000000" placeholder="继承默认"></label>
+        <label>连续 7 天奖励<input name="reward_7_days" type="number" min="0" max="1000000" placeholder="继承默认"></label>
+        <label>连续 14 天奖励<input name="reward_14_days" type="number" min="0" max="1000000" placeholder="继承默认"></label>
+        <label>连续 30 天奖励<input name="reward_30_days" type="number" min="0" max="1000000" placeholder="继承默认"></label>
+        <label class="checkbox-box"><input type="checkbox" name="enabled" value="on" checked> ✅️ 启用方案</label>
+      </div>
+      <div class="form-grid two">
+        <label>Steam 奖励方式<select name="steam_reward_mode"><option value="database">关联数据库增加熊币</option><option value="websocket">WebSocket 执行游戏代码</option></select></label>
+        <label>WebSocket 游戏操作<select name="steam_reward_operation"><option value="execute_game_command">执行游戏指令</option><option value="steam_reward">Steam 奖励指令</option></select><small>只有执行成功才会写入签到记录。</small></label>
+        <label>Steam 奖励游戏指令<textarea name="steam_reward_command" rows="2" maxlength="512">#ChangeCurrencyBalance Normal {reward} {steam_id}</textarea><small>支持 {reward}、{steam_id}、{qq}、{name}、{group_id}。</small></label>
+        <label>游戏奖励失败文案<textarea name="steam_reward_failure_message" rows="2" maxlength="500">签到奖励执行失败，未完成本次签到，请稍后重试。</textarea></label>
+      </div>
+      <label>签到成功文案<textarea name="signin_message" rows="2" maxlength="1000" placeholder="留空使用默认文案；可用 {name}、{count}、{month_count}、{time} 等变量"></textarea></label>
+      <div class="form-submit-row"><small>不再需要手写 JSON；只提交此表单才会保存。</small><button class="button primary" type="submit">新增签到方案</button></div>
+    </fieldset>
+  </form>
+  </div>
+  <div class="item-list" id="signin-profile-items" data-collection-scope="signin-profiles" data-searchable-list data-page-size="10" data-search-placeholder="搜索签到方案">
+    {% for profile in signin_profiles %}
+    <form method="post" action="{{ group_prefix }}/{{ group_id }}/signin-profiles" class="list-item signin-profile-row" data-collection-item data-collection-id="{{ profile.id }}" data-group-draft-form>
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}"><input type="hidden" name="profile_id" value="{{ profile.id }}">
+      <div class="signin-profile-fields">
+        <label>ID<input name="profile_id_display" value="{{ profile.id }}" readonly></label>
+        <label>名称<input name="name" value="{{ profile.name }}" maxlength="80" required></label>
+        <label>命令<input name="command" value="{{ profile.command }}" maxlength="32" required></label>
+        <label>方式<select name="mode"><option value="basic" {% if profile.mode == 'basic' %}selected{% endif %}>普通</option><option value="steam" {% if profile.mode == 'steam' %}selected{% endif %}>SteamID</option></select></label>
+        <label>周期<select name="schedule"><option value="daily" {% if profile.schedule == 'daily' %}selected{% endif %}>每日</option><option value="weekly" {% if profile.schedule == 'weekly' %}selected{% endif %}>每周</option><option value="monthly" {% if profile.schedule == 'monthly' %}selected{% endif %}>每月</option><option value="streak" {% if profile.schedule == 'streak' %}selected{% endif %}>连续</option></select></label>
+        <label>基础奖励<input name="base_reward" type="number" min="0" max="1000000" value="{{ '' if profile.base_reward is none else profile.base_reward }}"></label>
+        <label>连续 3 天奖励<input name="reward_3_days" type="number" min="0" max="1000000" value="{{ '' if profile.reward_3_days is none else profile.reward_3_days }}"></label>
+        <label>连续 7 天奖励<input name="reward_7_days" type="number" min="0" max="1000000" value="{{ '' if profile.reward_7_days is none else profile.reward_7_days }}"></label>
+        <label>连续 14 天奖励<input name="reward_14_days" type="number" min="0" max="1000000" value="{{ '' if profile.reward_14_days is none else profile.reward_14_days }}"></label>
+        <label>连续 30 天奖励<input name="reward_30_days" type="number" min="0" max="1000000" value="{{ '' if profile.reward_30_days is none else profile.reward_30_days }}"></label>
+        <label class="checkbox-box"><input type="checkbox" name="enabled" value="on" {% if profile.enabled %}checked{% endif %}> ✅️ 启用</label>
+        <label>Steam 奖励方式<select name="steam_reward_mode"><option value="database" {% if profile.steam_reward_mode == 'database' %}selected{% endif %}>数据库熊币</option><option value="websocket" {% if profile.steam_reward_mode == 'websocket' %}selected{% endif %}>WebSocket 游戏代码</option></select></label>
+        <label>WebSocket 操作<select name="steam_reward_operation"><option value="execute_game_command" {% if profile.steam_reward_operation == 'execute_game_command' %}selected{% endif %}>执行游戏指令</option><option value="steam_reward" {% if profile.steam_reward_operation == 'steam_reward' %}selected{% endif %}>Steam 奖励指令</option></select></label>
+        <label>Steam 奖励指令<textarea name="steam_reward_command" rows="2" maxlength="512">{{ profile.steam_reward_command }}</textarea></label>
+        <label>奖励失败文案<textarea name="steam_reward_failure_message" rows="2" maxlength="500">{{ profile.steam_reward_failure_message }}</textarea></label>
+        <label class="signin-profile-message">成功文案<textarea name="signin_message" rows="2" maxlength="1000">{{ profile.signin_message }}</textarea></label>
+      </div>
+      <div class="row-actions"><button class="button secondary small" name="operation" value="update" {% if not can_edit %}disabled{% endif %}>保存</button><button class="button danger small" name="operation" value="delete" formnovalidate {% if not can_edit %}disabled{% endif %}>删除</button></div>
+    </form>
+    {% else %}<div class="empty-state compact">暂无独立签到方案；默认 /签到 仍按上方统计设置运行。</div>{% endfor %}
+  </div>
+</section>
+
+{% set lottery_config = lottery_config|default({}) %}
+<section class="panel management-panel group-section-panel" id="lottery-awards" data-group-section-panel="lottery-awards">
+  <div class="section-heading"><div><h2>默认抽奖奖项</h2><p>这些奖项属于默认抽奖命令；多个活动的奖项在“多个抽奖活动”页面分别维护。</p></div></div>
+  <div class="lottery-award-editor" data-lottery-awards>
+    <div class="lottery-award-list" data-lottery-award-list>
+      {% for award in lottery_config.get('awards', []) %}
+      <div class="lottery-award-row" data-lottery-award-row data-award-id="{{ award.id }}">
+        <label>名称<input name="name" value="{{ award.name }}" maxlength="100" required {% if not can_edit %}disabled{% endif %}></label>
+        <label>概率 %<input name="probability" type="number" min="0" max="100" step="0.01" value="{{ award.probability }}" required {% if not can_edit %}disabled{% endif %}></label>
+        <label>库存<input name="stock" type="number" min="0" max="1000000" value="{{ award.stock }}" required {% if not can_edit %}disabled{% endif %}></label>
+        <label class="checkbox-box"><input name="enabled" type="checkbox" {% if award.enabled %}checked{% endif %} {% if not can_edit %}disabled{% endif %}> ✅️ 启用</label>
+        <div class="row-actions"><button class="button secondary small" type="button" data-lottery-award-update {% if not can_edit %}disabled{% endif %}>保存</button><button class="button danger small" type="button" data-lottery-award-delete {% if not can_edit %}disabled{% endif %}>删除</button></div>
+      </div>
+      {% else %}<p class="muted">暂无默认奖项，请在下方新增。</p>{% endfor %}
+    </div>
+    <form method="post" action="{{ group_prefix }}/{{ group_id }}/lottery-awards" class="lottery-award-action-form" data-lottery-award-action-form>
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}"><input type="hidden" name="campaign_id" value=""><input type="hidden" name="operation"><input type="hidden" name="award_id"><input type="hidden" name="name"><input type="hidden" name="probability"><input type="hidden" name="stock"><input type="hidden" name="enabled">
+      <fieldset class="lottery-award-add-grid" {% if not can_edit %}disabled{% endif %}><label>新增奖项名称<input data-lottery-add-name maxlength="100" placeholder="例如：月卡"></label><label>概率 %<input data-lottery-add-probability type="number" min="0" max="100" step="0.01" value="100"></label><label>库存<input data-lottery-add-stock type="number" min="0" max="1000000" value="0"></label><label class="checkbox-box"><input data-lottery-add-enabled type="checkbox" checked> ✅️ 启用</label><button class="button ghost small" type="button" data-lottery-award-add>新增奖项</button></fieldset>
+    </form>
+  </div>
+</section>
+
+<section class="panel management-panel group-section-panel" id="lottery-campaigns" data-group-section-panel="lottery-campaigns">
+  <div class="section-heading"><div><h2>多个抽奖活动</h2><p>每个活动有独立指令、次数、冷却、文案和奖项；活动库存与抽取记录在 Windows 本地分开保存。</p></div></div>
+  <div class="collection-toolbar">
+    <label>当前抽奖活动
+      <select data-collection-picker="lottery-campaigns" aria-controls="lottery-campaign-items">
+        <option value="__new__">＋ 新增抽奖活动</option>
+        {% for campaign in lottery_config.get('campaigns', []) if campaign is mapping %}<option value="{{ campaign.get('id','') }}">{{ campaign.get('name', campaign.get('id','活动')) }}（{{ campaign.get('keyword','') }}）</option>{% endfor %}
+      </select>
+    </label>
+    <small>选择一个活动后再编辑它的命令和奖项。</small>
+  </div>
+  <div data-collection-create="lottery-campaigns">
+  <form method="post" action="{{ group_prefix }}/{{ group_id }}/lottery-campaigns" class="management-form" data-group-draft-form>
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}"><input type="hidden" name="operation" value="add">
+    <fieldset {% if not can_edit %}disabled{% endif %}>
+      <div class="form-grid four"><label>活动 ID（可留空自动生成）<input name="campaign_id" maxlength="64" pattern="[A-Za-z0-9_-]{1,64}" placeholder="daily"></label><label>活动名称<input name="name" maxlength="100" placeholder="每日抽奖" required></label><label>活动命令<input name="keyword" maxlength="48" placeholder="抽奖1" required></label><label class="checkbox-box"><input type="checkbox" name="enabled" value="on" checked> ✅️ 启用活动</label><label>每人最多次数<input name="max_draws_per_user" type="number" min="0" max="1000000" value="0"></label><label>冷却秒数<input name="cooldown" type="number" min="0" max="31536000" value="0"></label></div>
+      <div class="form-grid two"><label>中奖文案<textarea name="success_message" rows="2" maxlength="1000" placeholder="留空使用默认文案"></textarea></label><label>未中奖文案<textarea name="empty_message" rows="2" maxlength="1000" placeholder="留空使用默认文案"></textarea></label></div>
+      <div class="form-submit-row"><small>创建活动后，在下方展开活动即可单独维护奖项。</small><button class="button primary" type="submit">新增抽奖活动</button></div>
+    </fieldset>
+  </form>
+  </div>
+  <div class="lottery-campaign-list" id="lottery-campaign-items" data-collection-scope="lottery-campaigns" data-searchable-list data-page-size="8" data-search-placeholder="搜索抽奖活动">
+    {% for campaign in lottery_config.get('campaigns', []) if campaign is mapping %}
+    <article class="lottery-campaign-card" data-collection-item data-collection-id="{{ campaign.get('id','') }}">
+      <form method="post" action="{{ group_prefix }}/{{ group_id }}/lottery-campaigns" class="management-form compact-form" data-group-draft-form>
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}"><input type="hidden" name="campaign_id" value="{{ campaign.get('id','') }}"><input type="hidden" name="campaign_name" value="{{ campaign.get('name','') }}">
+        <div class="form-grid four"><label>ID<input value="{{ campaign.get('id','') }}" readonly></label><label>名称<input name="name" value="{{ campaign.get('name','') }}" maxlength="100" required></label><label>命令<input name="keyword" value="{{ campaign.get('keyword','') }}" maxlength="48" required></label><label class="checkbox-box"><input type="checkbox" name="enabled" value="on" {% if campaign.get('enabled', True) %}checked{% endif %}> ✅️ 启用</label><label>每人次数<input name="max_draws_per_user" type="number" min="0" max="1000000" value="{{ campaign.get('max_draws_per_user', 0) }}"></label><label>冷却秒数<input name="cooldown" type="number" min="0" max="31536000" value="{{ campaign.get('cooldown', 0) }}"></label></div>
+        <div class="form-grid two"><label>中奖文案<textarea name="success_message" rows="2" maxlength="1000">{{ campaign.get('success_message','') }}</textarea></label><label>未中奖文案<textarea name="empty_message" rows="2" maxlength="1000">{{ campaign.get('empty_message','') }}</textarea></label></div>
+         <div class="row-actions"><button type="submit" class="button secondary small" name="operation" value="update" {% if not can_edit %}disabled{% endif %}>保存活动</button><button type="submit" class="button danger small" name="operation" value="delete" formnovalidate data-confirm="确定删除这个抽奖活动吗？" {% if not can_edit %}disabled{% endif %}>删除活动</button></div>
+      </form>
+      <div class="campaign-awards"><h3>{{ campaign.get('name', campaign.get('id','活动')) }} 的奖项</h3>
+        {% for award in campaign.get('awards', []) if award is mapping %}
+        <form method="post" action="{{ group_prefix }}/{{ group_id }}/lottery-awards" class="lottery-campaign-award-row" data-group-draft-form>
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}"><input type="hidden" name="campaign_id" value="{{ campaign.get('id','') }}"><input type="hidden" name="award_id" value="{{ award.get('id','') }}">
+          <label>名称<input name="name" value="{{ award.get('name','') }}" maxlength="100" required></label><label>概率 %<input name="probability" type="number" min="0" max="100" step="0.01" value="{{ award.get('probability',0) }}" required></label><label>库存<input name="stock" type="number" min="0" max="1000000" value="{{ award.get('stock',0) }}" required></label><label class="checkbox-box"><input name="enabled" value="on" type="checkbox" {% if award.get('enabled', True) %}checked{% endif %}> ✅️</label><button class="button secondary small" name="operation" value="update" {% if not can_edit %}disabled{% endif %}>保存</button><button class="button danger small" name="operation" value="delete" formnovalidate {% if not can_edit %}disabled{% endif %}>删除</button>
+        </form>
+        {% else %}<p class="muted">暂无奖项。</p>{% endfor %}
+        <form method="post" action="{{ group_prefix }}/{{ group_id }}/lottery-awards" class="lottery-campaign-award-row add-award-row" data-group-draft-form><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><input type="hidden" name="campaign_id" value="{{ campaign.get('id','') }}"><input type="hidden" name="operation" value="add"><input type="hidden" name="award_id" value=""><label>新增名称<input name="name" maxlength="100" required></label><label>概率 %<input name="probability" type="number" min="0" max="100" step="0.01" value="100" required></label><label>库存<input name="stock" type="number" min="0" max="1000000" value="0" required></label><label class="checkbox-box"><input name="enabled" value="on" type="checkbox" checked> ✅️</label><button class="button ghost small" {% if not can_edit %}disabled{% endif %}>新增奖项</button></form>
+      </div>
+    </article>
+    {% else %}<div class="empty-state compact">暂无独立抽奖活动；默认活动仍可在“默认活动设置/奖项”中使用。</div>{% endfor %}
+  </div>
+</section>
+
+<section class="panel management-panel group-section-panel" id="feature-timed_message" data-group-section-panel="feature-timed_message">
+  <div class="section-heading"><div><h2>定时播报与任务</h2><p>定时消息和群管任务。周期任务使用 Cron；一次性任务填写具体日期和时间。</p></div><span class="code-tip">例：2026-12-31 20:00</span></div>
+  <div class="feature-help-grid timed-task-guide" aria-label="定时任务时间说明">
+    <div class="feature-help-item"><strong>五段怎么填</strong><p>分钟 0-59、小时 0-23、日期 1-31、月份 1-12、星期 0-6（周一=0，周日=6）。用 <code>*</code> 表示每天都匹配。</p></div>
+    <div class="feature-help-item"><strong>常用例子</strong><p><code>0 9 * * *</code> 每天 09:00；<code>*/10 * * * *</code> 每 10 分钟；<code>0 9 * * 0-4</code> 周一至周五 09:00。一次性任务填写 <code>2026-12-31 20:00</code>，发送成功后自动关闭。</p></div>
+  </div>
+  {{ managed_feature_settings(managed_features.timed_message, '定时任务') }}
+  <form method="post" action="{{ group_prefix }}/{{ group_id }}/timed-messages" class="management-form" data-timed-task-form data-group-draft-form>
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <fieldset {% if not can_edit %}disabled{% endif %}>
+      <div class="form-grid four">
+        <label>任务名称<input name="name" maxlength="100" placeholder="每天早报" autocomplete="off"></label>
+        <label>Cron<input name="cron_expr" maxlength="100" placeholder="0 9 * * *" spellcheck="false"><small>周期任务填写：分 时 日 月 周；一次性任务可留空。</small></label>
+        <label>一次性发送时间<input name="run_at" type="datetime-local" step="60"><small>与 Cron 二选一，例如 2026-12-31 20:00。</small></label>
+        <label class="checkbox-box"><input type="checkbox" name="hourly" value="on" data-hourly-toggle> 🕐 每个整点播报<small>勾选后自动使用 0 * * * *。</small></label>
+        <label>任务类型<select name="action" data-timed-action><option value="message">发送消息</option><option value="hourly_time">整点报时</option><option value="random_music">随机播放音乐</option><option value="whole_ban">全体禁言</option><option value="whole_unban">全体解禁</option></select></label>
+        <label class="checkbox-box" data-timed-at-all><input type="checkbox" name="at_all"> @ 全体成员<span data-timed-at-all-help>文字播报和整点报时可用</span></label>
+      </div>
+      <label data-timed-message><span data-timed-message-label>播报内容</span><textarea name="message" rows="3" maxlength="4000" placeholder="整点报时可填写后缀，例如：请合理安排时间。"></textarea><small data-timed-message-help>整点报时会自动发送“现在是 HH:00，整点报时。”；填写内容后会作为后缀。全体禁言/解禁任务不需要填写内容。</small></label>
+      <div class="form-submit-row"><small>保存后等待 Windows 同步。</small><button class="button primary" type="submit">添加定时任务</button></div>
+    </fieldset>
+  </form>
+  <div class="item-list" data-searchable-list data-page-size="12" data-search-placeholder="搜索已保存的内容">
+  {% for task in timed_messages %}
+    <div class="list-item" data-collection-item>
+      <div><strong>{{ task.name }}</strong><p>{% if task.run_at %}<code>一次性：{{ task.run_at_text }}</code>{% else %}<code>{{ task.cron_expr }}</code>{% endif %} · {{ {'message':'发送消息','hourly_time':'整点报时','random_music':'随机播放音乐','whole_ban':'全体禁言','whole_unban':'全体解禁'}.get(task.action, task.action) }} · 已执行 {{ task.sent_count or 0 }} 次 · 最近执行 {{ task.last_sent_text|default('尚未执行') }}</p>{% if task.action == 'message' %}<small>{{ task.message }}</small>{% elif task.action == 'hourly_time' %}<small>自动生成当前整点时间{% if task.message %} · 后缀：{{ task.message }}{% endif %}</small>{% elif task.action == 'random_music' %}<small>{% if task.message %}随机关键词：{{ task.message }}{% else %}未指定歌曲或歌手，执行时完全随机一首{% endif %} · 自动多接口</small>{% else %}<small>不发送文字内容{% if task.created_text|default('') != '-' %} · 创建于 {{ task.created_text }}{% endif %}</small>{% endif %}</div>
+      <div class="row-actions">
+        <span class="pill {{ 'active' if task.enabled else '' }}">{{ '✅️ 已开启' if task.enabled else '❌️ 已关闭' }}</span>
+        <button type="button" class="button ghost small" data-timed-task-editor-open="{{ task.id }}" aria-controls="timed-task-editor-{{ task.id }}">编辑定时任务</button>
+        <form method="post" action="{{ group_prefix }}/{{ group_id }}/timed-messages/{{ task.id }}/toggle"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><input type="hidden" name="enabled" value="{{ 'false' if task.enabled else 'true' }}"><button class="button ghost small" {% if not can_edit %}disabled{% endif %}>{{ '❌️ 关闭' if task.enabled else '✅️ 开启' }}</button></form>
+        <form method="post" action="{{ group_prefix }}/{{ group_id }}/timed-messages/{{ task.id }}/delete"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button class="button danger small" {% if not can_edit %}disabled{% endif %}>删除</button></form>
+      </div>
+      <div class="timed-task-modal" id="timed-task-editor-{{ task.id }}" data-timed-task-editor="{{ task.id }}" hidden role="dialog" aria-modal="true" aria-labelledby="timed-task-editor-title-{{ task.id }}">
+        <button type="button" class="timed-task-modal-backdrop" data-timed-task-editor-close aria-label="关闭定时任务编辑窗口"></button>
+        <section class="timed-task-modal-dialog" tabindex="-1">
+          <div class="section-heading compact-heading"><div><h3 id="timed-task-editor-title-{{ task.id }}">编辑定时任务</h3><p>修改后保留本条任务的执行记录，保存后等待 Windows 同步。</p></div><button type="button" class="button ghost small" data-timed-task-editor-close>关闭</button></div>
+          <form method="post" action="{{ group_prefix }}/{{ group_id }}/timed-messages/{{ task.id }}/edit" class="timed-task-editor-form" data-group-draft-form data-timed-task-form>
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <fieldset {% if not can_edit %}disabled{% endif %}>
+              <div class="timed-task-editor-grid">
+                <label>任务名称<input name="name" maxlength="100" value="{{ task.name }}" required></label>
+                <label>任务类型<select name="action" data-timed-action><option value="message" {% if task.action == 'message' %}selected{% endif %}>发送消息</option><option value="hourly_time" {% if task.action == 'hourly_time' %}selected{% endif %}>整点报时</option><option value="random_music" {% if task.action == 'random_music' %}selected{% endif %}>随机播放音乐</option><option value="whole_ban" {% if task.action == 'whole_ban' %}selected{% endif %}>全体禁言</option><option value="whole_unban" {% if task.action == 'whole_unban' %}selected{% endif %}>全体解禁</option></select></label>
+                <label>Cron<input name="cron_expr" maxlength="100" value="{{ task.cron_expr }}" placeholder="0 9 * * *" spellcheck="false"><small>周期任务填写：分 时 日 月 周。</small></label>
+                <label>一次性发送时间<input name="run_at" type="datetime-local" step="60" value="{{ task.run_at_input }}"><small>一次性任务填写具体日期和时间。</small></label>
+                <label class="checkbox-box"><input type="checkbox" name="hourly" value="on" data-hourly-toggle {% if task.cron_expr == '0 * * * *' and not task.run_at %}checked{% endif %}> 🕐 每个整点<span>勾选后固定每小时 00 分执行。</span></label>
+                <label class="checkbox-box" data-timed-at-all><input type="checkbox" name="at_all" {% if task.at_all %}checked{% endif %}> @ 全体成员<span data-timed-at-all-help>文字播报和整点报时可用</span></label>
+              </div>
+              <label data-timed-message><span data-timed-message-label>播报内容</span><textarea name="message" rows="4" maxlength="4000">{{ task.message }}</textarea><small data-timed-message-help>保存后由 Windows 执行。</small></label>
+              <div class="form-submit-row"><small>保存不会新增任务或清除已执行次数。</small><button class="button primary" type="submit">保存本条任务</button></div>
+            </fieldset>
+          </form>
+        </section>
+      </div>
+    </div>
+  {% else %}<div class="empty-state compact">暂无定时任务</div>{% endfor %}
+  </div>
+</section>
+
+<section class="panel management-panel group-section-panel" id="feature-reply" data-group-section-panel="feature-reply">
+  <div class="section-heading"><div><h2>自动回复规则</h2><p>每条规则按“匹配方式 + 触发词”单独保存；再次使用相同组合提交，即更新该条规则。</p></div></div>
+  {{ managed_feature_settings(managed_features.reply, '自动回复') }}
+  <form method="post" action="{{ group_prefix }}/{{ group_id }}/replies" class="management-form" enctype="multipart/form-data" data-reply-form data-group-draft-form>
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <fieldset {% if not can_edit %}disabled{% endif %}>
+      <div class="form-grid four"><label>匹配方式<select name="reply_type"><option value="exact">精确匹配</option><option value="fuzzy">包含关键词</option><option value="regex">正则表达式</option></select><small>正则无需填写 / 前后斜杠。</small></label><label>触发词<input name="key" maxlength="300" autocomplete="off" required><small>精确：完全相同；包含：消息含该词。</small></label><label>触发概率<input name="probability" type="number" min="0" max="100" value="100" required data-reply-probability><small>0-100；100 表示每次都回复。</small></label><label>最大触发次数<input name="max_uses" type="number" min="0" max="1000000" value="0" required data-reply-max-uses><small>0 表示不限制；次数由 Windows 本地记录。</small></label></div>
+      <label>回复内容<textarea name="reply" rows="2" maxlength="4000"></textarea><small>文字和图片至少填写一项。可用变量：{name}、{user_name}、{qq}、{user_id}、{group}、{group_id}、{keyword}、{count}、{reply_count}、{time}、{date}。上传图片后机器人只发送图片，文字会保留为规则内容但不会同时发出。</small></label>
+      <div class="reply-image-upload"><label>回复图片（可多选）<input type="file" name="images" accept="image/png,image/jpeg,image/webp" multiple data-reply-images><small>每条规则最多 20 张图片。网页保存后由 Windows 通过同步缓存；图片、路径和令牌不会写入分群配置。</small></label><div class="reply-image-preview" data-reply-image-preview aria-live="polite"></div></div>
+      <label class="checkbox-box"><input type="checkbox" name="clear_images"> 清除该触发词现有的全部图片<span>不上传新图片时，原图片会保留；勾选此项后仅保留本次文字回复。</span></label>
+      <div class="form-submit-row"><small>保存后等待 Windows 同步。已有规则请直接在下方对应条目内修改。</small><button class="button primary" type="submit" data-reply-submit>添加自动回复</button></div>
+    </fieldset>
+  </form>
+  <div class="item-list" data-searchable-list data-page-size="10" data-search-placeholder="搜索已保存的内容">
+  {% for reply in replies %}
+    <article class="list-item editable-list-item reply-inline-item" data-collection-item>
+      <form method="post" action="{{ group_prefix }}/{{ group_id }}/replies" class="inline-edit-form reply-inline-form" enctype="multipart/form-data" data-reply-form data-group-draft-form>
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}"><input type="hidden" name="reply_type" value="{{ reply.type }}"><input type="hidden" name="key" value="{{ reply.key }}">
+        <fieldset {% if not can_edit %}disabled{% endif %}>
+          <div class="inline-edit-heading"><div><strong>触发词：{{ reply.key }}</strong><p class="reply-rule-meta">匹配方式：{{ {'exact':'精确匹配','fuzzy':'包含关键词','regex':'正则表达式'}.get(reply.type, reply.type) }} · 概率：{{ reply.probability }}% · 最大触发：{{ reply.max_uses if reply.max_uses else '不限' }}</p><small>如需更换触发词或匹配方式，请删除后新增。</small></div><span class="pill {{ 'active' if reply.has_images else '' }}">{{ ('🖼️ ' ~ reply.image_count ~ ' 张图片') if reply.has_images else '文字回复' }}</span></div>
+          <div class="form-grid three"><label>回复内容<textarea name="reply" rows="3" maxlength="4000">{{ reply.reply or '' }}</textarea><small>已有图片时只发送图片；文字仍会保存供以后切换。</small></label><label>触发概率<input name="probability" type="number" min="0" max="100" value="{{ reply.probability }}" data-reply-probability="{{ reply.probability }}" required></label><label>最大触发次数<input name="max_uses" type="number" min="0" max="1000000" value="{{ reply.max_uses }}" data-reply-max-uses="{{ reply.max_uses }}" required><small>0 表示不限。</small></label></div>
+          {% if reply.has_images %}<div class="saved-reply-images">{% for asset_id in reply.portal_asset_ids|default([]) %}<a href="{{ group_prefix }}/{{ group_id }}/reply-assets/{{ asset_id }}" target="_blank" rel="noopener"><img src="{{ group_prefix }}/{{ group_id }}/reply-assets/{{ asset_id }}" alt="自动回复图片 {{ loop.index }}" loading="lazy"></a>{% endfor %}</div><small class="reply-image-status">{{ {'pending':'等待 Windows 缓存','ready':'Windows 已缓存','partial':'部分缓存完成','failed':'缓存失败，请重新保存'}.get(reply.image_status, '等待 Windows 同步') }}</small>{% endif %}
+          <div class="reply-image-upload compact"><label>替换或追加图片<input type="file" name="images" accept="image/png,image/jpeg,image/webp" multiple data-reply-images><small>不选择图片会保留现有图片；最多 20 张。</small></label><div class="reply-image-preview" data-reply-image-preview aria-live="polite"></div></div>
+          <label class="checkbox-box"><input type="checkbox" name="clear_images"> 清除现有图片<span>不上传新图片时将改为纯文字回复。</span></label>
+          <div class="form-submit-row"><small>只保存这一条规则。</small><button class="button secondary small" type="submit" data-reply-submit>保存本条</button></div>
+        </fieldset>
+      </form>
+      <form method="post" action="{{ group_prefix }}/{{ group_id }}/replies/delete" class="inline-delete-form"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><input type="hidden" name="reply_type" value="{{ reply.type }}"><input type="hidden" name="key" value="{{ reply.key }}"><button class="button danger small" {% if not can_edit %}disabled{% endif %}>删除本条</button></form>
+    </article>
+  {% else %}<div class="empty-state compact">暂无自动回复</div>{% endfor %}
+  </div>
+</section>
+
+<section class="panel management-panel group-section-panel" id="feature-sub_admin" data-group-section-panel="feature-sub_admin">
+  <div class="section-heading"><div><h2>分群管理员</h2><p>为本群 QQ 用户分配群管权限。</p></div></div>
+  {{ managed_feature_settings(managed_features.sub_admin, '分群管理员') }}
+  <form method="post" action="{{ group_prefix }}/{{ group_id }}/sub-admins" class="management-form sub-admin-form" id="sub-admin-form" data-sub-admin-form data-group-draft-form>
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <fieldset {% if not can_edit %}disabled{% endif %}>
+      <label>管理员 QQ 号<input name="user_id" data-sub-admin-user inputmode="numeric" pattern="[0-9]{5,20}" maxlength="20" placeholder="例如：2650362143" autocomplete="off" required><small>只能添加到当前分群，不会影响其他群。</small></label>
+      <div class="permission-picker" role="group" aria-label="分群管理员权限"><strong>可管理的功能</strong><div>{% for permission, label in [('reply', '回复管理'), ('mute', '禁言'), ('kick', '踢出'), ('recall', '撤回'), ('blacklist', '黑名单')] %}<label class="checkbox-box"><input type="checkbox" name="permissions" value="{{ permission }}" data-sub-admin-permission {% if permission == 'reply' %}checked{% endif %}> {{ label }}</label>{% endfor %}</div><small>新添加的分群管理员默认只有回复管理权限；踢出、禁言、拉黑需要主人明确授权。</small></div>
+      <div class="form-submit-row"><small>默认选中常用权限。</small><button class="button secondary" type="submit" data-sub-admin-submit>添加管理员</button></div>
+    </fieldset>
+  </form>
+  <div class="item-list" data-searchable-list data-page-size="10" data-search-placeholder="搜索分群管理员">
+  {% for admin in sub_admins %}
+    <article class="list-item editable-list-item sub-admin-inline-item" data-collection-item>
+      <form method="post" action="{{ group_prefix }}/{{ group_id }}/sub-admins" class="inline-edit-form" data-group-draft-form>
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}"><input type="hidden" name="user_id" value="{{ admin.user_id }}">
+        <fieldset {% if not can_edit %}disabled{% endif %}><div class="inline-edit-heading"><div><strong>QQ {{ admin.user_id }}</strong><small>权限只对当前分群生效。</small></div></div><div class="permission-picker compact-permission-picker" role="group" aria-label="QQ {{ admin.user_id }} 的权限"><div>{% for permission, label in [('reply', '回复管理'), ('mute', '禁言'), ('kick', '踢出'), ('recall', '撤回'), ('blacklist', '黑名单')] %}<label class="checkbox-box"><input type="checkbox" name="permissions" value="{{ permission }}" {% if permission in (admin.permissions or []) %}checked{% endif %}> {{ label }}</label>{% endfor %}</div></div><div class="form-submit-row"><small>只保存这一位管理员的权限。</small><button class="button secondary small" type="submit">保存权限</button></div></fieldset>
+      </form>
+      <form method="post" action="{{ group_prefix }}/{{ group_id }}/sub-admins/{{ admin.user_id }}/delete" class="inline-delete-form"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button class="button danger small" {% if not can_edit %}disabled{% endif %}>删除管理员</button></form>
+    </article>
+  {% else %}<div class="empty-state compact">暂无分群管理员</div>{% endfor %}
+  </div>
+</section>
+
+<section class="panel management-panel group-section-panel" id="feature-player_reply" data-group-section-panel="feature-player_reply">
+  <div class="section-heading"><div><h2>指定成员回复</h2><p>为指定 QQ 成员设置独立候选回复，不与普通自动回复混在一起。</p></div></div>
+  {{ managed_feature_settings(managed_features.player_reply, '指定成员回复') }}
+  {% set player_reply_default_at = true %}{% if managed_features.player_reply %}{% set player_reply_default_at = managed_features.player_reply['values'].get('default_at_user', true) %}{% endif %}
+  <form method="post" action="{{ group_prefix }}/{{ group_id }}/player-replies" class="form-stack management-form" data-player-reply-form data-group-draft-form><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><fieldset {% if not can_edit %}disabled{% endif %}><label>群内成员<input name="user_id" list="group-member-options" inputmode="numeric" pattern="[0-9]{5,20}" maxlength="20" autocomplete="off" placeholder="输入或选择 QQ 号" required><datalist id="group-member-options"></datalist><small>输入 QQ 号、昵称或群名片后显示匹配成员；也可以手动输入 QQ 号。</small></label><label>候选回复内容<textarea name="messages" rows="3" maxlength="8000" placeholder="每行一条候选回复" required></textarea><small>最多 30 条，每条不超过 1000 字；同一 QQ 号再次保存会更新这一位成员的全部候选内容。</small></label><div class="form-grid two"><label class="checkbox-box"><input type="checkbox" name="at_user" {% if player_reply_default_at %}checked{% endif %}> 回复时 @ 用户</label><label class="checkbox-box"><input type="checkbox" name="enabled" checked> ✅️ 启用这条回复</label></div><div class="form-submit-row"><small>保存后同步到 Windows。</small><button class="button secondary" type="submit">添加指定成员回复</button></div></fieldset></form>
+  <div class="item-list" data-searchable-list data-page-size="10" data-search-placeholder="搜索指定成员回复">
+  {% for reply in player_replies %}
+    <article class="list-item editable-list-item player-reply-inline-item" data-collection-item>
+      <form method="post" action="{{ group_prefix }}/{{ group_id }}/player-replies" class="inline-edit-form" data-group-draft-form>
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}"><input type="hidden" name="user_id" value="{{ reply.user_id }}">
+        <fieldset {% if not can_edit %}disabled{% endif %}><div class="inline-edit-heading"><div><strong>QQ {{ reply.user_id }}</strong><small>该成员发任意消息时，从下方候选内容中随机回复一条。</small></div><span class="pill {{ 'active' if reply.enabled else '' }}">{{ '✅️ 已开启' if reply.enabled else '❌️ 已关闭' }}</span></div><label>候选回复内容<textarea name="messages" rows="4" maxlength="8000" required>{{ reply.messages|join('\n') }}</textarea><small>每行一条，最多 30 条。</small></label><div class="form-grid two"><label class="checkbox-box"><input type="checkbox" name="at_user" {% if reply.at_user %}checked{% endif %}> 回复时 @ 该成员</label><label class="checkbox-box"><input type="checkbox" name="enabled" {% if reply.enabled %}checked{% endif %}> ✅️ 启用这条回复</label></div><div class="form-submit-row"><small>只保存这一位成员的回复。</small><button class="button secondary small" type="submit">保存本条</button></div></fieldset>
+      </form>
+      <form method="post" action="{{ group_prefix }}/{{ group_id }}/player-replies/{{ reply.user_id }}/delete" class="inline-delete-form"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button class="button danger small" {% if not can_edit %}disabled{% endif %}>删除本条</button></form>
+    </article>
+  {% else %}<div class="empty-state compact">暂无指定成员回复</div>{% endfor %}
+  </div>
+</section>
+</div>
+{% endblock %}

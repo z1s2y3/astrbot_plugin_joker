@@ -1,0 +1,28 @@
+{% extends "admin_base.html" %}
+{% block title %}卡密管理 · {{ portal_name }}{% endblock %}
+{% block content %}
+<a class="back-link" href="/admin">← 返回管理后台</a>
+<section class="group-hero"><div><div class="eyebrow">LICENSE MANAGEMENT</div><h1>卡密管理</h1><div class="status-line"><span>{{ unused|length }} 张未使用</span><span>·</span><span>{{ used|length }} 张已使用</span></div></div></section>
+
+{% if remote_read_only %}<div class="license-warning neutral"><strong>本地主控模式</strong><span>网页仅显示本地同步的脱敏授权摘要。生成、删除卡密请在本地 QQ 群使用主人指令完成。</span></div>{% endif %}
+
+<section class="panel admin-section">
+  <div class="section-heading"><div><h2>生成使用方卡密</h2><p>这些是发给客户使用的一次性 JK 卡密；客户在目标群执行 <code>/激活卡密 卡密</code>，再次激活会在现有有效期上累计。</p></div></div>
+  <div class="license-tier-guide" aria-label="授权类型说明">
+    <div><strong>普通群管卡密 · JK</strong><span>授权本地群管、娱乐、基础签到和网页配置登记；续期会沿用原群授权记录并写入新的到期时间。</span></div>
+    <div><strong>游戏授权卡密 · JG</strong><span>由主人单独发放，授权 SCUM 数据库签到、SteamID 验证和游戏指令；不会替代 JK 群管授权。</span></div>
+    <div><strong>网站通道卡密</strong><span>用于小程序或外部 WebSocket 通道，由后台单独验证，不在本页生成，也不会开放服务器密钥。</span></div>
+  </div>
+  <form method="post" action="/admin/licenses/generate" class="management-form"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><fieldset {% if remote_read_only %}disabled{% endif %}><div class="form-grid two"><label>授权天数<input type="number" name="days" min="-1" max="36500" value="30" required><small>-1 表示永久，不能填写 0；续期按现有到期时间累计</small></label><label>生成数量<input type="number" name="count" min="1" max="100" value="1" required><small>每张卡密唯一且只能激活一次</small></label></div><button class="button primary">生成使用方卡密</button></fieldset></form>
+</section>
+
+<section class="panel admin-section">
+  <div class="section-heading"><div><h2>未使用卡密</h2><p>可复制发给客户；删除后不可恢复。</p></div></div>
+  <div class="item-list">{% for card in unused %}<div class="list-item"><input class="license-value" value="{{ card }}" readonly aria-label="未使用卡密"><form method="post" action="/admin/licenses/delete"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><input type="hidden" name="license_key" value="{{ card }}"><button class="button danger small">删除</button></form></div>{% else %}<div class="empty-state compact">暂无未使用卡密</div>{% endfor %}</div>
+</section>
+
+<section class="panel admin-section">
+  <div class="section-heading"><div><h2>已使用卡密</h2><p>仅显示脱敏值；授权以群记录为准。</p></div></div>
+  <div class="table-wrap"><table><thead><tr><th>卡密</th><th>群号</th><th>激活QQ</th><th>激活时间</th><th>当前授权</th></tr></thead><tbody>{% for item in used %}<tr><td><code>{{ item.card_mask }}</code></td><td>{{ item.group_id or '-' }}</td><td>{{ item.user_id or '-' }}</td><td>{{ item.activated_text }}</td><td><span class="pill {{ 'active' if item.auth.active else 'expired' }}">{{ item.auth.expire_text }}</span></td></tr>{% else %}<tr><td colspan="5" class="muted">暂无已使用卡密</td></tr>{% endfor %}</tbody></table></div>
+</section>
+{% endblock %}

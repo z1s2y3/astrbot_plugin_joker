@@ -1,0 +1,25 @@
+{% extends "admin_base.html" %}
+{% block title %}安全设置 · {{ portal_name }}{% endblock %}
+{% block content %}
+<a class="back-link" href="/admin">← 返回管理后台</a>
+<section class="hero compact">
+  <div><div class="eyebrow">SECURITY SETTINGS</div><h1>安全设置</h1><p class="muted">调整网页登录 Cookie 的有效时间。设置只影响 Linux 网页，不会写入 Windows 群管配置。</p></div>
+  <span class="pill active">当前 {{ session_max_age_text }}</span>
+</section>
+
+<section class="panel narrow-panel">
+  <div class="section-heading"><div><h2>登录 Cookie 有效期</h2><p>单位为秒，范围 300 秒至 30 天。修改后新响应立即使用新值；超过新有效期的旧登录会话会要求重新登录。</p></div></div>
+  <form method="post" action="/admin/security" class="form-stack">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <label>有效期（秒）
+      <input type="number" name="session_max_age" value="{{ session_max_age }}" min="300" max="2592000" step="1" required inputmode="numeric">
+      <small>示例：3600 = 1 小时，604800 = 7 天，2592000 = 30 天。</small>
+    </label>
+    <button class="button primary" type="submit">保存 Cookie 有效期</button>
+  </form>
+</section>
+
+<section class="panel narrow-panel">
+  <div class="section-heading"><div><h2>安全说明</h2><p>Cookie 只保存签名的登录会话标识，不保存密码、卡密、同步令牌或群配置。管理员和客户使用不同的 Cookie，两个入口的登录状态互不覆盖；这里设置的是两类 Cookie 共用的有效期。</p></div></div>
+</section>
+{% endblock %}

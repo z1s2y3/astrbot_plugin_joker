@@ -1,0 +1,41 @@
+{% extends "admin_base.html" %}
+{% block title %}用户 {{ target_user.username }} · {{ portal_name }}{% endblock %}
+{% block content %}
+<a class="back-link" href="/admin/users">← 返回用户管理</a>
+<section class="group-hero">
+  <div><div class="eyebrow">USER MANAGEMENT</div><h1>{{ target_user.username }}</h1><div class="status-line"><span>ID {{ target_user.id }}</span><span>·</span><span>{{ target_user.email or '未绑定邮箱（旧账号）' }}</span><span>·</span><span>{{ '管理员' if target_user.is_admin else '客户账号' }}</span><span>·</span><span>{{ '正常' if target_user.is_active else '已停用' }}</span></div></div>
+  <span class="pill {{ 'active' if target_user.is_active else 'expired' }}">{{ '有效账号' if target_user.is_active else '禁止登录' }}</span>
+</section>
+
+<div class="dashboard-columns">
+  <section class="panel">
+    <div class="section-heading"><div><h2>角色与状态</h2><p>不能停用或降级当前管理员自己。</p></div></div>
+    <div class="admin-actions">
+      <form method="post" action="/admin/users/{{ target_user.id }}/role"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><input type="hidden" name="role" value="{{ 'customer' if target_user.is_admin else 'admin' }}"><button class="button secondary wide">{{ '降为客户' if target_user.is_admin else '设为管理员' }}</button></form>
+      <form method="post" action="/admin/users/{{ target_user.id }}/status"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><input type="hidden" name="enabled" value="{{ 'false' if target_user.is_active else 'true' }}"><button class="button {{ 'danger' if target_user.is_active else 'primary' }} wide">{{ '停用账号' if target_user.is_active else '启用账号' }}</button></form>
+    </div>
+  </section>
+  <section class="panel">
+    <div class="section-heading"><div><h2>重置密码</h2><p>重置后请通过安全方式通知该用户。</p></div></div>
+    <form method="post" action="/admin/users/{{ target_user.id }}/password" class="form-stack"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><label>新密码<input type="password" name="new_password" minlength="8" maxlength="128" required></label><label>确认新密码<input type="password" name="new_password_confirm" minlength="8" maxlength="128" required></label><button class="button secondary">重置密码</button></form>
+  </section>
+  <section class="panel">
+    <div class="section-heading"><div><h2>CMD 日志权限</h2><p>总开关开启后，客户可查看其所属群的脱敏运行日志。</p></div></div>
+    <form method="post" action="/admin/users/{{ target_user.id }}/console-access">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <input type="hidden" name="enabled" value="{{ 'false' if target_user.can_view_console else 'true' }}">
+      <button class="button {{ 'danger' if target_user.can_view_console else 'primary' }} wide" type="submit">{{ '禁止查看 CMD 日志' if target_user.can_view_console else '允许查看 CMD 日志' }}</button>
+    </form>
+    <p class="muted permission-note">当前：{{ '已允许' if target_user.can_view_console else '未允许' }}{% if target_user.is_admin %}。管理员在总开关开启时始终可查看。{% endif %}</p>
+  </section>
+</div>
+
+<section class="panel admin-section">
+  <div class="section-heading"><div><h2>所属分群</h2><p>该用户只能访问下列群。</p></div></div>
+  <div class="table-wrap"><table><thead><tr><th>群号</th><th>卡密</th><th>授权</th><th>开机</th><th>功能数</th><th></th></tr></thead><tbody>
+  {% for item in groups %}<tr><td>{{ item.access.group_id }}</td><td>{{ item.access.card_mask }}</td><td>{{ item.auth.expire_text }}</td><td>{{ '✅️ 开机' if item.powered_on else '❌️ 关机' }}</td><td>{{ item.enabled_count }}</td><td><a class="button ghost small" href="/admin/groups/{{ item.access.group_id }}">查看配置</a></td></tr>{% else %}<tr><td colspan="6" class="muted">该用户尚未绑定群</td></tr>{% endfor %}
+  </tbody></table></div>
+</section>
+
+<section class="panel admin-section"><div class="section-heading"><div><h2>用户操作日志</h2><p>最近 100 条记录。</p></div></div><div class="table-wrap"><table><thead><tr><th>时间</th><th>群号</th><th>操作</th><th>说明</th><th>IP</th></tr></thead><tbody>{% for log in logs %}<tr><td>{{ log.created_at.strftime('%m-%d %H:%M:%S') }}</td><td>{{ log.group_id or '-' }}</td><td>{{ log.action }}</td><td>{{ log.summary }}</td><td>{{ log.ip_address or '-' }}</td></tr>{% else %}<tr><td colspan="5" class="muted">暂无日志</td></tr>{% endfor %}</tbody></table></div></section>
+{% endblock %}

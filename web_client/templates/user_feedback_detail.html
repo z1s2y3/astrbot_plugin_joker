@@ -1,0 +1,23 @@
+{% extends "user_base.html" %}
+{% block title %}反馈详情 · {{ portal_name }}{% endblock %}
+{% block content %}
+<a class="back-link" href="/user/feedback">← 返回反馈列表</a>
+<section class="hero compact">
+  <div>
+    <div class="eyebrow">FEEDBACK #{{ feedback.id }}</div>
+    <h1>{{ feedback.subject }}</h1>
+    <p class="muted">{{ feedback.created_at.strftime('%Y-%m-%d %H:%M') }}{% if feedback.group_id %} · 群 {{ feedback.group_id }}{% endif %} · {{ feedback_categories.get(feedback.category, feedback.category) }}</p>
+  </div>
+  <span class="pill {{ 'active' if feedback.status == 'resolved' else ('expired' if feedback.status == 'rejected' else '') }}">{{ feedback_statuses.get(feedback.status, feedback.status) }}</span>
+</section>
+<section class="panel">
+  <div class="section-heading"><div><h2>反馈内容</h2><p>仅当前账号可查看。</p></div></div>
+  <div class="feedback-detail-content">{{ feedback.content }}</div>
+</section>
+{% if feedback.admin_reply %}
+<section class="panel">
+  <div class="section-heading"><div><h2>管理员处理意见</h2><p>处理状态：{{ feedback_statuses.get(feedback.status, feedback.status) }}</p></div></div>
+  <div class="feedback-detail-content">{{ feedback.admin_reply }}</div>
+</section>
+{% endif %}
+{% endblock %}

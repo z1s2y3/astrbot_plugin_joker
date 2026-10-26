@@ -1,0 +1,30 @@
+{% extends "admin_base.html" %}
+{% block title %}群管分群 · {{ portal_name }}{% endblock %}
+{% block content %}
+<section class="hero compact">
+  <div><div class="eyebrow">GROUP MANAGEMENT</div><h1>群管分群</h1><p class="muted">选择群号，进入群管功能配置。</p></div>
+  <div class="row-actions"><a class="button secondary" href="/admin">返回群管首页</a></div>
+</section>
+
+<section class="panel admin-section" id="groups">
+  <div class="section-heading"><div><h2>群管状态</h2><p>授权、同步、开机和功能数量。</p></div></div>
+  <form method="get" class="list-filter-form" role="search">
+    <label>搜索群号、网页账号或卡密<input type="search" name="group_search" value="{{ group_search }}" maxlength="64" placeholder="输入群号、账号或卡密片段"></label>
+    <div class="row-actions"><button class="button secondary small" type="submit">搜索</button>{% if group_search %}<a class="button ghost small" href="/admin/groups">清除</a>{% endif %}</div>
+  </form>
+  <p class="list-result-count">{% if group_search %}搜索“{{ group_search }}” · {% endif %}共 {{ group_total }} 个分群</p>
+  <div class="table-wrap"><table>
+    <thead><tr><th>群号</th><th>网页账号</th><th>登记卡密</th><th>授权</th><th>本地同步</th><th>开机</th><th>功能</th><th>配置</th><th>操作</th></tr></thead>
+    <tbody>{% for item in groups %}<tr>
+      <td><strong>{{ item.group_id }}</strong></td>
+      <td>{% if item.owner %}<a href="/admin/users/{{ item.owner.id }}">{{ item.owner.username }}</a>{% else %}<span class="muted">未绑定</span>{% endif %}</td>
+      <td>{{ item.access.card_mask if item.access else '-' }}</td>
+      <td><span class="pill {{ 'active' if item.auth.active else 'expired' }}">{{ item.auth.expire_text }}</span></td>
+      <td><span class="pill {{ 'active' if item.sync.online else 'expired' }}" title="{{ item.sync.detail|default('') }}">{{ item.sync.badge|default(item.sync.text) }}</span></td>
+      <td>{{ '✅️ 开机' if item.powered_on else '❌️ 关机' }}</td><td>{{ item.enabled_count }} 项</td><td>{{ '存在' if item.configured else '未创建' }}</td>
+      <td class="table-actions"><a class="button ghost small" href="/admin/groups/{{ item.group_id }}">配置</a>{% if item.access %}<form method="post" action="/admin/groups/{{ item.group_id }}/unbind" data-confirm="确定移除这个网页群组登记吗？Windows 授权和本地群配置会保留。"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button class="button danger small">删除网页登记</button></form>{% endif %}</td>
+    </tr>{% else %}<tr><td colspan="9" class="muted">暂无分群记录</td></tr>{% endfor %}</tbody>
+  </table></div>
+  {% set pagination = group_pagination %}{% include "_pagination.html" %}
+</section>
+{% endblock %}

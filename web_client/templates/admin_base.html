@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark light">
+  <title>{% block title %}{{ portal_name }}{% endblock %}</title>
+  <link rel="stylesheet" href="/static/app.css?v={{ static_asset_version }}">
+  <script defer src="/static/app.js?v={{ static_asset_version }}"></script>
+</head>
+<body data-theme-mode="{{ theme.mode }}" data-theme-day="{{ theme.day_url }}" data-theme-night="{{ theme.night_url }}">
+  <div class="theme-background" aria-hidden="true"></div>
+  <header class="topbar">
+    <a class="brand" href="/admin"><span>J</span>{{ portal_name }} · 管理后台</a>
+    {% if current_user %}
+    <nav class="session-actions" aria-label="管理员账户操作">
+      <span class="account">{{ current_user.username }}</span>
+      <form method="post" action="/admin/logout" class="inline-form">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <button class="button ghost small" type="submit">退出</button>
+      </form>
+    </nav>
+    {% endif %}
+  </header>
+  {% if current_user %}
+  <div class="app-layout">
+    <aside class="sidebar" aria-label="管理员导航">
+      <nav class="sidebar-nav">
+        <a class="sidebar-link{% if request.url.path == '/admin' %} active{% endif %}" href="/admin">群管首页</a>
+        <a class="sidebar-link{% if request.url.path == '/admin/licenses' %} active{% endif %}" href="/admin/licenses">群授权卡密</a>
+        <a class="sidebar-link{% if request.url.path == '/admin/email' %} active{% endif %}" href="/admin/email">邮箱设置</a>
+        <a class="sidebar-link{% if request.url.path == '/admin/deployment' %} active{% endif %}" href="/admin/deployment">执行端</a>
+        <a class="sidebar-link{% if request.url.path == '/admin/websocket' %} active{% endif %}" href="/admin/websocket">游戏 WebSocket</a>
+        <a class="sidebar-link{% if request.url.path == '/admin/music-sources' %} active{% endif %}" href="/admin/music-sources">音乐源服务</a>
+        <a class="sidebar-link{% if request.url.path == '/admin/update' %} active{% endif %}" href="/admin/update">网页更新</a>
+        <a class="sidebar-link{% if request.url.path == '/admin/update-log' %} active{% endif %}" href="/admin/update-log">更新日志</a>
+        <a class="sidebar-link{% if request.url.path == '/admin/feedback' %} active{% endif %}" href="/admin/feedback">用户反馈</a>
+        <a class="sidebar-link{% if request.url.path == '/admin/security' %} active{% endif %}" href="/admin/security">安全设置</a>
+        <a class="sidebar-link{% if request.url.path == '/admin/global-blacklist' %} active{% endif %}" href="/admin/global-blacklist">全局黑名单</a>
+        {% if request.app.state.settings.data_mode != 'remote' %}<a class="sidebar-link{% if request.url.path == '/admin/global' %} active{% endif %}" href="/admin/global">全局群管</a>{% endif %}
+        <a class="sidebar-link{% if request.url.path == '/admin/appearance' %} active{% endif %}" href="/admin/appearance">外观</a>
+      </nav>
+      <section class="sidebar-section admin-sidebar-nav" aria-label="后台数据导航">
+        <div class="sidebar-label">后台数据</div>
+        <nav class="sidebar-nav" aria-label="后台数据">
+          <a class="sidebar-link{% if request.url.path == '/admin/users' or request.url.path.startswith('/admin/users/') %} active{% endif %}" href="/admin/users">用户管理</a>
+          <a class="sidebar-link{% if request.url.path == '/admin/groups' or request.url.path.startswith('/admin/groups/') %} active{% endif %}" href="/admin/groups">群管分群</a>
+          <a class="sidebar-link{% if request.url.path == '/admin/logs' %} active{% endif %}" href="/admin/logs">群管日志</a>
+        </nav>
+      </section>
+      {% block sidebar_extra %}{% endblock %}
+    </aside>
+  {% endif %}
+  <main class="page {% block page_class %}{% endblock %}">
+    {% for flash in flashes %}<div class="flash {{ flash.category }}">{{ flash.message }}</div>{% endfor %}
+    {% block content %}{% endblock %}
+  </main>
+  {% if current_user %}</div>{% endif %}
+  <footer>Joker 管理后台 · {{ current_year }}</footer>
+</body>
+</html>

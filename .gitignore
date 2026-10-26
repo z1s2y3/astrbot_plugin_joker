@@ -205,3 +205,36 @@ cython_debug/
 marimo/_static/
 marimo/_lsp/
 __marimo__/
+
+# Joker plugin runtime state and local backups
+# Browser profiles can contain cookies, history, and login state. They must stay local.
+data/scum/browser_profile/
+data/scum/debug_page_dump.html
+data/cmd_config.json
+backups/
+qqadmin/.timed_dispatch_locks/
+# Joker customer portal secrets
+web_client/.env
+
+# Local deployment/build caches (never part of the plugin or Linux package)
+.tmp-package-check/
+.uv-cache/
+.uv-cache-local/
+.uv-python/
+
+# Local test outputs and throwaway integration databases
+.tmp-*.txt
+*-browser-check.db
+browser-check.db
+ws-*-test.db
+tmp-player-db-test/
+test-failures.txt
+
+# Local runtime state and generated release archives
+auth/plugin_data/
+data/plugin_data/
+sql/*.db
+sql/**/*.db
+sql/*.sqlite*
+sql/**/*.sqlite*
+堡塔/

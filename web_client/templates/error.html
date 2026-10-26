@@ -1,0 +1,4 @@
+{% extends "admin_base.html" if request.url.path == '/admin' or request.url.path.startswith('/admin/') else "user_base.html" %}
+{% block title %}操作失败 · {{ portal_name }}{% endblock %}
+{% block page_class %}auth-page{% endblock %}
+{% block content %}<section class="auth-card"><div class="eyebrow">REQUEST ERROR</div><h1>操作未完成</h1><p class="muted">{{ error }}</p>{% if request_id %}<p class="muted"><small>请求编号：<code>{{ request_id }}</code></small></p>{% endif %}<a class="button primary wide" href="{{ '/admin' if request.url.path == '/admin' or request.url.path.startswith('/admin/') else '/user' }}">返回{{ '管理后台' if request.url.path == '/admin' or request.url.path.startswith('/admin/') else '客户中心' }}</a></section>{% endblock %}

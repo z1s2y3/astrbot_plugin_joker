@@ -1,0 +1,37 @@
+{% extends "admin_base.html" %}
+{% block title %}用户反馈 · {{ portal_name }}{% endblock %}
+{% block content %}
+<section class="hero compact">
+  <div>
+    <div class="eyebrow">FEEDBACK INBOX</div>
+    <h1>用户反馈</h1>
+    <p class="muted">查看并处理客户的网页、同步和群管反馈。</p>
+  </div>
+  <div class="row-actions">
+    <a class="button ghost small{% if not selected_status %} active{% endif %}" href="/admin/feedback">全部</a>
+    {% for key, label in feedback_statuses.items() %}<a class="button ghost small{% if selected_status == key %} active{% endif %}" href="/admin/feedback?status={{ key }}">{{ label }}</a>{% endfor %}
+  </div>
+</section>
+
+<section class="panel">
+  <div class="section-heading"><div><h2>反馈列表</h2><p>最近 200 条。</p></div></div>
+  <div class="feedback-list admin-feedback-list">
+  {% for item in feedback_items %}
+    {% set reporter = users_by_id.get(item.user_id) %}
+    {% set handler = users_by_id.get(item.handled_by) if item.handled_by else none %}
+    <article class="feedback-card admin-feedback-card">
+      <div class="feedback-card-head">
+        <div>
+          <strong><a href="/admin/feedback/{{ item.id }}">#{{ item.id }} · {{ item.subject }}</a></strong>
+          <small>{{ item.created_at.strftime('%Y-%m-%d %H:%M') }} · 用户 {{ reporter.username if reporter else ('#' ~ item.user_id) }}{% if item.group_id %} · 群 {{ item.group_id }}{% endif %} · {{ feedback_categories.get(item.category, item.category) }}</small>
+        </div>
+        <span class="pill {{ 'active' if item.status == 'resolved' else ('expired' if item.status == 'rejected' else '') }}">{{ feedback_statuses.get(item.status, item.status) }}</span>
+      </div>
+      <p class="feedback-content">{{ item.content[:180] }}{% if item.content|length > 180 %}…{% endif %}</p>
+      <div class="feedback-process-foot"><small>{% if handler %}最近由 {{ handler.username }} 处理{% elif item.handled_at %}已处理{% else %}尚未处理{% endif %}</small><span><small>{{ {'queued':'等待发送','sent':'已发送','failed':'发送失败','not_configured':'未配置邮箱','pending':'待发送'}.get(item.email_state, item.email_state) }}</small> <a class="button ghost small" href="/admin/feedback/{{ item.id }}">查看详情</a></span></div>
+    </article>
+  {% else %}<div class="empty-state compact">暂无反馈记录。</div>{% endfor %}
+  </div>
+  {% set pagination = feedback_pagination %}{% include "_pagination.html" %}
+</section>
+{% endblock %}

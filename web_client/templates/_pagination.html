@@ -1,0 +1,14 @@
+{% if pagination and pagination.page_count > 1 %}
+<nav class="pagination" aria-label="分页">
+  <span class="pagination-summary">共 {{ pagination.total }} 条，第 {{ pagination.page }} / {{ pagination.page_count }} 页</span>
+  <div class="pagination-links">
+    {% if pagination.has_previous %}<a class="button ghost small" href="{{ pagination.previous_url }}" rel="prev">上一页</a>{% endif %}
+    {% for link in pagination.links %}
+      {% if link.number %}
+        {% if link.current %}<span class="button ghost small active" aria-current="page">{{ link.number }}</span>{% else %}<a class="button ghost small" href="{{ link.url }}">{{ link.number }}</a>{% endif %}
+      {% else %}<span class="pagination-ellipsis" aria-hidden="true">…</span>{% endif %}
+    {% endfor %}
+    {% if pagination.has_next %}<a class="button ghost small" href="{{ pagination.next_url }}" rel="next">下一页</a>{% endif %}
+  </div>
+</nav>
+{% endif %}

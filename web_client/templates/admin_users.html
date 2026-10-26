@@ -1,0 +1,29 @@
+{% extends "admin_base.html" %}
+{% block title %}用户管理 · {{ portal_name }}{% endblock %}
+{% block content %}
+<section class="hero compact">
+  <div><div class="eyebrow">ACCOUNT MANAGEMENT</div><h1>用户管理</h1><p class="muted">查看客户与后台管理员账号，并在此创建、授权或停用账号。</p></div>
+  <div class="row-actions"><a class="button secondary" href="/admin">返回概览</a></div>
+</section>
+
+<section class="panel advanced-panel" id="advanced">
+  <details>
+    <summary><span><strong>高级操作：手动创建账号</strong><small>普通客户不需要此操作，使用卡密可自行注册。</small></span><span class="details-arrow">展开</span></summary>
+    <form method="post" action="/admin/users/create" class="management-form create-user-form"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><fieldset><div class="form-grid three"><label>账号<input name="username" placeholder="4-32 位字母、数字或下划线" minlength="4" maxlength="32" pattern="[A-Za-z0-9_]+" autocomplete="username" required></label><label>初始密码<input type="password" name="password" placeholder="至少 8 位" minlength="8" maxlength="128" autocomplete="new-password" required></label><label>账号角色<select name="role"><option value="customer">客户账号</option><option value="admin">后台管理员</option></select></label></div><div class="form-submit-row"><small>手动创建客户账号后，仍需要在群内激活卡密，才会显示可管理的分群。</small><button class="button primary" type="submit">创建账号</button></div></fieldset></form>
+  </details>
+</section>
+
+<section class="panel admin-section" id="users">
+  <div class="section-heading"><div><h2>所有用户</h2><p>客户和后台管理员账号。</p></div></div>
+  <div class="table-wrap"><table>
+    <thead><tr><th>ID</th><th>账号</th><th>角色</th><th>状态</th><th>分群数</th><th>注册时间</th><th></th></tr></thead>
+    <tbody>{% for item in users %}<tr>
+      <td>{{ item.id }}</td><td><strong>{{ item.username }}</strong></td>
+      <td><span class="pill {{ 'active' if item.is_admin else '' }}">{{ '管理员' if item.is_admin else '客户' }}</span></td>
+      <td>{{ '正常' if item.is_active else '已停用' }}</td><td>{{ item.groups|length }}</td>
+      <td>{{ item.created_at.strftime('%Y-%m-%d %H:%M') }}</td>
+      <td><a class="button ghost small" href="/admin/users/{{ item.id }}">查看</a></td>
+    </tr>{% else %}<tr><td colspan="7" class="muted">暂无用户</td></tr>{% endfor %}</tbody>
+  </table></div>
+</section>
+{% endblock %}

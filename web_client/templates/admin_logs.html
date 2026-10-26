@@ -1,0 +1,17 @@
+{% extends "admin_base.html" %}
+{% block title %}后台操作日志 · {{ portal_name }}{% endblock %}
+{% block content %}
+<section class="hero compact">
+  <div><div class="eyebrow">AUDIT LOG</div><h1>后台操作日志</h1><p class="muted">共 {{ log_total }} 条客户与管理员操作记录，按时间分页显示。</p></div>
+  <div class="row-actions"><a class="button secondary" href="/admin">返回概览</a></div>
+</section>
+
+<section class="panel admin-section" id="logs">
+  <div class="section-heading"><div><h2>最近操作</h2><p>用于追踪网页账号、卡密登记和分群配置操作。</p></div></div>
+  <div class="table-wrap"><table>
+    <thead><tr><th>时间</th><th>用户ID</th><th>群号</th><th>操作</th><th>说明</th><th>IP</th></tr></thead>
+    <tbody>{% for log in logs %}<tr><td>{{ log.created_at.strftime('%m-%d %H:%M:%S') }}</td><td>{{ log.user_id or '-' }}</td><td>{{ log.group_id or '-' }}</td><td>{{ log.action }}</td><td>{{ log.summary }}</td><td>{{ log.ip_address or '-' }}</td></tr>{% else %}<tr><td colspan="6" class="muted">暂无日志</td></tr>{% endfor %}</tbody>
+  </table></div>
+  {% set pagination = log_pagination %}{% include "_pagination.html" %}
+</section>
+{% endblock %}

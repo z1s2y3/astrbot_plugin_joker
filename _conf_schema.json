@@ -1,0 +1,1398 @@
+{
+  "basic": {
+    "description": "基础设置",
+    "hint": "全局基础配置，包括白名单、主人账号等",
+    "type": "object",
+    "items": {
+      "whitelist_groups": {
+        "description": "白名单群组",
+        "type": "list",
+        "items": {
+          "type": "string"
+        },
+        "default": [],
+        "hint": "白名单群绕过授权、开机和 SCUM 查询关键词限制；绑定/解绑等命令仍受自身管理员/群主权限检查"
+      },
+      "admin_groups": {
+        "description": "管理员群组",
+        "type": "list",
+        "items": {
+          "type": "string"
+        },
+        "default": [],
+        "hint": "需要管理员权限才能使用绑定/解绑功能的群组"
+      },
+      "owner_ids": {
+        "description": "主人账号",
+        "type": "list",
+        "items": {
+          "type": "string"
+        },
+        "default": [],
+        "hint": "全局主人账号ID列表；主人使用授权管理、卡密和网页同步控制命令不受群开关机限制，普通业务/群管命令仍须群已开机"
+      },
+      "filter_groups": {
+        "description": "过滤群组",
+        "type": "list",
+        "items": {
+          "type": "string"
+        },
+        "default": [],
+        "hint": "关键词过滤命令维护的群组列表"
+      },
+      "allow_slash_prefix": {
+        "description": "启用命令功能",
+        "type": "bool",
+        "default": true,
+        "hint": "是否允许使用插件命令（关闭后所有命令不可用）"
+      },
+      "enable_help": {
+        "description": "启用帮助功能",
+        "type": "bool",
+        "default": true,
+        "hint": "是否启用帮助命令（帮助）"
+      },
+      "enable_settings": {
+        "description": "启用群组设置功能",
+        "type": "bool",
+        "default": true,
+        "hint": "是否启用群组设置相关命令"
+      }
+    }
+  },
+  "web_sync": {
+    "description": "绑定 Linux 网页配置中心",
+    "hint": "可选。Linux 网页是游戏和分群配置中心，Windows AstrBot 只负责主动同步和实际执行；首次连接仍需要在执行端完成网页地址、同步令牌和 Card Pepper 的引导。",
+    "type": "object",
+    "items": {
+      "enabled": {
+        "description": "启用 Linux 网页绑定",
+        "type": "bool",
+        "default": false,
+        "hint": "启用后，本机机器人会定期上传分群配置并拉取网页端已保存的配置；网页断开不会影响机器人继续运行。"
+      },
+      "portal_url": {
+        "description": "Linux 网页 HTTPS 地址",
+        "type": "string",
+        "default": "",
+        "hint": "首次引导时填写反向代理后的实际 HTTPS 域名，例如 https://web.example.com；网页同步成功后会自动下发公网来源，后台 WebSocket 页面无需重复填写。不要填写服务器 IP、SSH 端口、账号密码、查询参数或末尾斜杠。"
+      },
+      "sync_token": {
+        "description": "网页同步令牌",
+        "type": "string",
+        "default": "",
+        "hint": "至少 32 位随机值，必须与 Linux 服务器 JOKER_WEB_SYNC_TOKEN 完全相同。它不是网页登录密码，也不是 SSH 密码。"
+      },
+      "music_source_services": {
+        "description": "后台音乐源服务",
+        "type": "object",
+        "items": {},
+        "default": {},
+        "hint": "由 Linux 管理后台通过认证心跳下发的内部映射；请勿在 Windows 端手动填写。"
+      },
+      "game_executor": {
+        "description": "后台游戏插件连接",
+        "type": "object",
+        "items": {},
+        "default": {},
+        "hint": "由 Linux 管理后台通过认证心跳下发的内部映射；请勿在 Windows 端手动填写。"
+      },
+      "im3_socketio": {
+        "description": "后台 im3 连接",
+        "type": "object",
+        "items": {},
+        "default": {},
+        "hint": "由 Linux 管理后台通过认证心跳下发的内部映射；请勿在 Windows 端手动填写。"
+      },
+      "game_websocket_enabled": {
+        "description": "后台游戏 WebSocket 开关",
+        "type": "bool",
+        "default": false,
+        "hint": "由 Linux 管理后台自动下发；固定为 /api/sync/v1/ws，Windows 端无需手动修改。"
+      },
+      "game_websocket_endpoint_path": {
+        "description": "后台游戏 WebSocket 路径",
+        "type": "string",
+        "default": "/api/sync/v1/ws",
+        "hint": "由 Linux 管理后台下发；请在网页后台修改。"
+      },
+      "game_websocket_token": {
+        "description": "后台游戏 WebSocket 入口令牌",
+        "type": "string",
+        "default": "",
+        "hint": "由 Linux 管理后台在认证同步后下发。它与 web_sync.sync_token（网页同步令牌）完全不同，请勿手动填写或把两者设为同一值。"
+      },
+      "card_pepper": {
+        "description": "卡密指纹盐（Card Pepper）",
+        "type": "string",
+        "default": "",
+        "hint": "必须与 Linux 服务器 JOKER_WEB_CARD_PEPPER 完全相同，仅用于生成不可逆卡密指纹；网页不会收到原始卡密。两端不一致会导致卡密显示尚未同步。"
+      },
+      "interval_seconds": {
+        "description": "同步检查间隔（秒）",
+        "type": "int",
+        "default": 5,
+        "hint": "最小 3 秒，默认 5 秒。可在 QQ 中使用 /网页绑定状态 和 /测试网页连接 查看状态。"
+      },
+      "show_connection_events": {
+        "description": "Windows CMD connection status",
+        "type": "bool",
+        "default": false,
+        "hint": "Disabled by default; enable only when connection state changes should be written to the Windows group CMD."
+      }
+    }
+  },
+  "scum": {
+    "description": "SCUM查询",
+    "hint": "SCUM服务器查询和绑定相关配置。SCUM 查询可单独走中转地址，和群管网页同步隔离。",
+    "type": "object",
+    "items": {
+      "enable_query": {
+        "description": "启用查询功能",
+        "type": "bool",
+        "default": true
+      },
+      "enable_binding": {
+        "description": "启用绑定功能",
+        "type": "bool",
+        "default": true
+      },
+      "default_enabled": {
+        "description": "默认启用查询",
+        "type": "bool",
+        "default": true,
+        "hint": "未在白名单中的群组是否需要绑定ID才能使用查询功能"
+      },
+      "allow_other_query": {
+        "description": "允许查询其他服务器",
+        "type": "bool",
+        "default": true,
+        "hint": "绑定ID后是否允许查询其他服务器（全局默认）"
+      },
+      "permission_mode": {
+        "description": "权限模式",
+        "type": "string",
+        "default": "read_only",
+        "options": ["read_only", "full_access"],
+        "hint": "read_only: 仅允许使用，不允许修改配置；full_access: 完全访问"
+      },
+      "query_relay_url": {
+        "description": "SCUM 查询专用中转地址",
+        "type": "string",
+        "default": "https://ba.yooyun.top",
+        "hint": "SCUM 查询唯一入口，不会改变群管、成员、消息和配置同步地址。默认使用 https://ba.yooyun.top；该地址必须提供 /api/sync/v1/scum/query/<群号> 接口，并与网页同步令牌、Card Pepper 配套。"
+      }
+    }
+  },
+  "auth": {
+    "description": "授权系统",
+    "hint": "卡密授权相关配置",
+    "type": "object",
+    "items": {
+      "enable_auth": {
+        "description": "启用授权系统",
+        "type": "bool",
+        "default": false,
+        "hint": "开启后非白名单且未授权群完全静默（不发送普通回复、入群欢迎、入群审核、定时播报和自动通知）；主人仅对授权管理控制命令绕过开机限制，普通业务命令仍须先开机"
+      },
+      "auth_key": {
+        "description": "管理密钥",
+        "type": "string",
+        "default": "",
+        "hint": "用于生成和验证卡密的密钥；启用授权前必须设置为随机长密钥"
+      },
+      "auto_delete_used_keys_days": {
+        "description": "自动删除已用卡密天数",
+        "type": "int",
+        "default": 0,
+        "hint": "自动删除超过该天数的已使用卡密记录（0表示不自动删除）"
+      },
+      "auth_detail_query": {
+        "description": "授权查询显示详情",
+        "type": "bool",
+        "default": false,
+        "hint": "开启后管理员可查看详细授权信息（包含激活时间和到期时间）"
+      },
+      "permission_mode": {
+        "description": "权限模式",
+        "type": "string",
+        "default": "read_only",
+        "options": ["read_only", "full_access"],
+        "hint": "read_only: 仅允许查询授权状态；full_access: 允许生成卡密等管理操作"
+      },
+      "enable_auth_expire_reminder": {
+        "description": "启用授权到期提醒",
+        "type": "bool",
+        "default": true,
+        "hint": "开启后仅向仍通过发送门禁的已授权且开机群发送到期前提醒，并尝试艾特群主"
+      },
+      "auth_expire_reminder_hours": {
+        "description": "提前提醒小时数",
+        "type": "int",
+        "default": 24,
+        "hint": "在授权到期前多少小时发送提醒（默认24小时，建议6-48）"
+      },
+      "auth_expire_reminder_check_interval": {
+        "description": "检查间隔(秒)",
+        "type": "int",
+        "default": 3600,
+        "hint": "授权到期任务的检查间隔；实际检查不少于30秒，同一群重复提醒不少于60秒。提醒只发送到授权且已开机的群"
+      },
+      "auth_expire_reminder_at_owner": {
+        "description": "艾特群主",
+        "type": "bool",
+        "default": true,
+        "hint": "尝试艾特群主；无法获取群主QQ时仍发送普通文本提醒"
+      },
+      "auth_expire_reminder_message": {
+        "description": "提醒消息模板",
+        "type": "string",
+        "default": "",
+        "hint": "自定义提醒消息内容（留空使用默认模板）。可用变量: {group_id}群号, {expire_time}到期时间, {time_left}剩余时间"
+      },
+      "auth_expired_command_reply_interval": {
+        "description": "授权过期回复间隔(秒)",
+        "type": "int",
+        "default": 3600,
+        "hint": "仅针对保留授权记录且已开机的过期群，在执行显式斜杠指令时提示续费；这是回复间隔，不是自动提醒间隔。0=每次提示"
+      },
+      "auth_expired_command_reply_message": {
+        "description": "授权过期提示消息",
+        "type": "text",
+        "default": "授权已过期，请联系管理员购买或续费授权。",
+        "hint": "仅对授权记录仍保留、群已开机且发送显式指令的非主人显示；未授权群始终静默。支持变量: {group_id}。留空使用默认消息"
+      },
+      "allow_owner_when_expired": {
+        "description": "过期授权允许主人测试",
+        "type": "bool",
+        "default": false,
+        "hint": "开启后主人可在已开机、授权已过期的群内测试；不会放行其他成员，也不会绕过关机状态"
+      },
+      "auto_delete_expired_auth": {
+        "description": "自动删除过期授权",
+        "type": "bool",
+        "default": false,
+        "hint": "授权过期不会立即关机；宽限期结束后先删除群配置并关机，再删除授权记录"
+      },
+      "auto_delete_expired_auth_days": {
+        "description": "过期多少天后自动删除",
+        "type": "int",
+        "default": 0,
+        "hint": "授权过期多少天后自动清理群配置和授权记录（0=过期即删除，7=保留7天后删除）"
+      },
+      "default_auth_days": {
+        "description": "默认授权天数",
+        "type": "int",
+        "default": 30,
+        "hint": "使用/添加授权命令时的默认授权天数"
+      }
+    }
+  },
+  "qqadmin": {
+    "description": "QQ群管",
+    "hint": "群管自动消息只在白名单或已授权且已开机群执行；未授权/关机群不发送任何插件消息",
+    "type": "object",
+    "items": {
+      "enable_group_manage": {
+        "description": "启用群管总开关",
+        "type": "bool",
+        "default": true,
+        "hint": "是否启用群管功能总开关，开启后分群需授权才能使用群管功能"
+      },
+      "enable_group_config": {
+        "description": "启用群设置",
+        "type": "bool",
+        "default": false,
+        "hint": "是否启用 /群设置（兼容 /分群设置）以及启用功能、禁用功能、查看功能状态等分群配置命令"
+      },
+      "message_prompts": {
+        "description": "群状态消息提示",
+        "type": "object",
+        "hint": "仅自定义已通过发送门禁的状态消息；未授权群、关机状态下的自动事件和入群通知仍保持静默",
+        "items": {
+          "power_on_prompt": {
+            "description": "关机时开机提示",
+            "type": "text",
+            "default": "群管尚未开机，请先发送 /开机。",
+            "hint": "已授权且已关机的群发送显式指令时提示；支持变量: {group_id}。留空使用默认消息"
+          },
+          "power_on_success": {
+            "description": "开机成功提示",
+            "type": "text",
+            "default": "✅️ 已开机\n群管功能已启用，可以正常使用所有群管命令",
+            "hint": "执行 /开机 成功后发送；支持变量: {group_id}。留空使用默认消息"
+          },
+          "power_off_success": {
+            "description": "关机成功提示",
+            "type": "text",
+            "default": "❌️ 已关机\n群管功能已禁用，所有群管命令将不再响应",
+            "hint": "执行 /关机 成功后发送；支持变量: {group_id}。留空使用默认消息"
+          },
+          "power_off_already": {
+            "description": "重复关机提示",
+            "type": "text",
+            "default": "群管已关机，无需重复操作。",
+            "hint": "群已关机时再次执行 /关机 发送；支持变量: {group_id}。留空使用默认消息"
+          }
+        }
+      },
+      "auto_sync_global_config": {
+        "description": "自动同步全局配置",
+        "type": "bool",
+        "default": true,
+        "hint": "当全局配置修改时，自动同步到所有已授权的分群"
+      },
+      "group_config": {
+        "description": "群设置权限",
+        "type": "object",
+        "items": {
+          "use_permission": {
+            "description": "使用权限",
+            "type": "string",
+            "default": "admin",
+            "options": ["member", "admin", "owner"]
+          },
+          "modify_permission": {
+            "description": "修改权限",
+            "type": "string",
+            "default": "admin",
+            "options": ["admin", "owner"]
+          }
+        }
+      },
+      "global_config": {
+        "description": "全局配置权限",
+        "type": "object",
+        "items": {
+          "use_permission": {
+            "description": "使用权限",
+            "type": "string",
+            "default": "admin",
+            "options": ["admin", "owner"]
+          }
+        }
+      },
+      "reply": {
+        "description": "自动回复",
+        "type": "object",
+        "items": {
+          "enable_reply": {
+            "description": "启用自动回复功能",
+            "type": "bool",
+            "default": false
+          },
+          "default_reply_cooldown": {
+            "description": "默认回复冷却",
+            "type": "int",
+            "default": 0,
+            "hint": "自动回复的默认冷却时间（秒）"
+          },
+          "enable_keyword_reply": {
+            "description": "启用关键词回复",
+            "type": "bool",
+            "default": true,
+            "hint": "是否启用关键词匹配回复"
+          },
+          "enable_exact_match": {
+            "description": "启用精确匹配",
+            "type": "bool",
+            "default": false,
+            "hint": "是否要求完全匹配关键词才触发回复"
+          },
+          "max_reply_length": {
+            "description": "最大回复长度",
+            "type": "int",
+            "default": 500,
+            "hint": "自动回复的最大长度限制（字符）"
+          },
+          "cache_reply_images": {
+            "description": "缓存图片回复",
+            "type": "bool",
+            "default": true,
+            "hint": "开启后在后台把图片保存到本地，防止 QQ 临时图片地址过期；关闭后仍可发送原图片地址"
+          },
+          "reply_image_max_mb": {
+            "description": "单张图片最大 MB",
+            "type": "int",
+            "default": 20,
+            "hint": "允许缓存的单张图片大小，运行时限制为 1-100 MB"
+          },
+          "reply_image_download_concurrency": {
+            "description": "图片缓存并发数",
+            "type": "int",
+            "default": 4,
+            "hint": "同时缓存的图片数量，运行时限制为 1-8；网络较慢时建议保持默认值"
+          },
+          "reply_image_retry_interval": {
+            "description": "图片缓存重试间隔",
+            "type": "int",
+            "default": 30,
+            "hint": "缓存失败后再次触发该回复时，至少间隔多少秒重试；运行时限制为 30-86400 秒"
+          },
+          "use_permission": {
+            "description": "使用权限",
+            "type": "string",
+            "default": "admin",
+            "options": ["member", "admin", "owner"],
+            "hint": "谁可以使用自动回复功能"
+          },
+          "modify_permission": {
+            "description": "修改权限",
+            "type": "string",
+            "default": "admin",
+            "options": ["admin", "owner"],
+            "hint": "谁可以添加/修改/删除回复"
+          }
+        }
+      },
+      "lottery": {
+        "description": "抽奖",
+        "type": "object",
+        "items": {
+          "enable_lottery": {
+            "description": "启用抽奖功能",
+            "type": "bool",
+            "default": false,
+            "hint": "每群的奖项、概率、库存和文案在网页分群配置中维护；抽奖记录保存在 Windows 本地"
+          },
+          "use_permission": {
+            "description": "使用权限",
+            "type": "string",
+            "default": "member",
+            "options": ["member", "admin", "owner"]
+          },
+          "modify_permission": {
+            "description": "修改权限",
+            "type": "string",
+            "default": "admin",
+            "options": ["admin", "owner"]
+          }
+        }
+      },
+      "entertainment": {
+        "description": "娱乐",
+        "type": "object",
+        "items": {
+          "enable_entertainment": {
+            "description": "启用娱乐功能",
+            "type": "bool",
+            "default": false,
+            "hint": "提供骰子、猜拳和随机选择等轻量群互动；结果只在 Windows 本地生成"
+          },
+          "time_enabled": {
+            "description": "启用当前时间",
+            "type": "bool",
+            "default": true
+          },
+          "dice_enabled": {
+            "description": "启用骰子",
+            "type": "bool",
+            "default": true
+          },
+          "rps_enabled": {
+            "description": "启用猜拳",
+            "type": "bool",
+            "default": true
+          },
+          "random_enabled": {
+            "description": "启用随机选择",
+            "type": "bool",
+            "default": true
+          },
+          "like_enabled": {
+            "description": "启用 QQ 点赞",
+            "type": "bool",
+            "default": true
+          },
+          "music_enabled": {
+            "description": "启用点歌",
+            "type": "bool",
+            "default": true
+          },
+          "video_enabled": {
+            "description": "启用视频搜索",
+            "type": "bool",
+            "default": true
+          },
+          "time_command": {
+            "description": "时间命令",
+            "type": "string",
+            "default": "当前时间",
+            "hint": "默认一个命令；多个命令用 |、逗号或中文顿号分隔，例如 当前时间|时间"
+          },
+          "dice_command": {
+            "description": "骰子命令",
+            "type": "string",
+            "default": "骰子",
+            "hint": "默认一个命令；多个命令用 |、逗号或中文顿号分隔，例如 骰子|掷骰"
+          },
+          "rps_command": {
+            "description": "猜拳命令",
+            "type": "string",
+            "default": "猜拳",
+            "hint": "默认一个命令；多个命令用 |、逗号或中文顿号分隔，例如 猜拳|石头剪刀布"
+          },
+          "random_command": {
+            "description": "随机命令",
+            "type": "string",
+            "default": "随机",
+            "hint": "默认一个命令；多个命令用 |、逗号或中文顿号分隔，例如 随机|抽签"
+          },
+          "like_command": {
+            "description": "点赞命令",
+            "type": "string",
+            "default": "赞我",
+            "hint": "默认一个命令；多个命令用 |、逗号或中文顿号分隔，例如 赞我|点赞"
+          },
+          "music_command": {
+            "description": "点歌命令",
+            "type": "string",
+            "default": "点歌",
+            "hint": "默认一个命令；多个命令用 |、逗号或中文顿号分隔，例如 点歌|搜歌"
+          },
+          "music_selection_timeout": {
+            "description": "点歌等待选歌时间（秒）",
+            "type": "int",
+            "default": 600,
+            "hint": "搜索结果保留时间，运行时限制为 10-3600 秒；按分群和用户独立生效"
+          },
+          "music_sources": {
+            "description": "音乐源平台",
+            "type": "list",
+            "items": {
+              "type": "string"
+            },
+            "default": ["qq", "163"],
+            "hint": "分群网页可单独选择 qq、163、kugou 或 soda；soda 服务地址和密钥只在 Linux 管理后台配置"
+          },
+          "video_command": {
+            "description": "视频搜索命令",
+            "type": "string",
+            "default": "搜索视频",
+            "hint": "默认一个命令；多个命令用 |、逗号或中文顿号分隔，例如 搜索视频|视频搜索"
+          },
+          "like_daily_limit": {
+            "description": "每日点赞上限",
+            "type": "int",
+            "default": 20,
+            "hint": "运行时限制为 1-20；每个机器人账号独立计算，平台未确认成功不会消耗额度"
+          },
+          "cooldown": {
+            "description": "成员冷却（秒）",
+            "type": "int",
+            "default": 0,
+            "hint": "0 表示不限制，运行时限制为 0-86400 秒"
+          },
+          "max_sides": {
+            "description": "骰子最大面数",
+            "type": "int",
+            "default": 100,
+            "hint": "运行时限制为 2-100000"
+          },
+          "max_options": {
+            "description": "随机选项上限",
+            "type": "int",
+            "default": 20,
+            "hint": "运行时限制为 2-50"
+          }
+        }
+      },
+      "mute": {
+        "description": "禁言系统",
+        "type": "object",
+        "items": {
+          "enable_mute": {
+            "description": "启用禁言系统",
+            "type": "bool",
+            "default": true
+          },
+          "default_mute_level": {
+            "description": "默认禁言级别",
+            "type": "int",
+            "default": 5,
+            "hint": "自动禁言的默认级别（1-10）"
+          },
+          "default_mute_duration": {
+            "description": "默认禁言时长",
+            "type": "int",
+            "default": 300,
+            "hint": "手动禁言时未指定时长的默认禁言时间（秒）"
+          },
+          "use_permission": {
+            "description": "使用权限",
+            "type": "string",
+            "default": "admin",
+            "options": ["member", "admin", "owner"],
+            "hint": "谁可以使用禁言功能"
+          },
+          "modify_permission": {
+            "description": "修改权限",
+            "type": "string",
+            "default": "admin",
+            "options": ["admin", "owner"],
+            "hint": "谁可以设置禁言级别和时长"
+          }
+        }
+      },
+      "kick": {
+        "description": "踢出系统",
+        "type": "object",
+        "items": {
+          "enable_kick": {
+            "description": "启用踢出系统",
+            "type": "bool",
+            "default": false
+          },
+          "auto_blacklist_on_kick": {
+            "description": "踢出后自动拉黑",
+            "type": "bool",
+            "default": false,
+            "hint": "执行踢出操作后是否同时将用户加入黑名单"
+          },
+          "default_kick_limit": {
+            "description": "默认踢出上限",
+            "type": "int",
+            "default": 3,
+            "hint": "踢出该次数后建议拉黑"
+          },
+          "use_permission": {
+            "description": "使用权限",
+            "type": "string",
+            "default": "admin",
+            "options": ["member", "admin", "owner"],
+            "hint": "谁可以使用踢人功能"
+          },
+          "modify_permission": {
+            "description": "修改权限",
+            "type": "string",
+            "default": "admin",
+            "options": ["admin", "owner"],
+            "hint": "谁可以设置踢出上限等配置"
+          }
+        }
+      },
+      "blacklist": {
+        "description": "黑名单系统",
+        "type": "object",
+        "items": {
+          "enable_blacklist": {
+            "description": "启用黑名单系统",
+            "type": "bool",
+            "default": false
+          },
+          "auto_kick_blacklisted": {
+            "description": "自动踢出黑名单用户",
+            "type": "bool",
+            "default": true,
+            "hint": "检测到黑名单用户在群内时是否自动踢出并撤回全部消息"
+          },
+          "auto_blacklist_on_leave": {
+            "description": "自动将退群用户加入黑名单",
+            "type": "bool",
+            "default": false,
+            "hint": "用户主动退出群聊时自动加入黑名单"
+          },
+          "auto_blacklist_on_verify_fail": {
+            "description": "验证失败自动加入黑名单",
+            "type": "bool",
+            "default": false,
+            "hint": "验证失败被踢出后自动加入黑名单"
+          },
+          "use_permission": {
+            "description": "使用权限",
+            "type": "string",
+            "default": "admin",
+            "options": ["member", "admin", "owner"],
+            "hint": "谁可以使用黑名单功能（拉黑/解禁）"
+          },
+          "modify_permission": {
+            "description": "修改权限",
+            "type": "string",
+            "default": "admin",
+            "options": ["admin", "owner"],
+            "hint": "谁可以设置黑名单相关配置"
+          }
+        }
+      },
+      "audit": {
+        "description": "入群审核",
+        "type": "object",
+        "items": {
+          "enable_audit": {
+            "description": "启用入群审核",
+            "type": "bool",
+            "default": false
+          },
+          "enable_invite_audit": {
+            "description": "启用邀请审核",
+            "type": "bool",
+            "default": false,
+            "hint": "邀请入群也需要验证"
+          },
+          "default_approval_mode": {
+            "description": "默认审批模式",
+            "type": "string",
+            "default": "math",
+            "options": ["direct", "code", "math", "id", "steamid"],
+            "hint": "direct（直接批准）/ code（审批码）/ math（算数验证）/ id（数字验证）/ steamid（查询服务器数据库后批准）"
+          },
+          "default_verification_timeout": {
+            "description": "默认验证超时",
+            "type": "int",
+            "default": 300,
+            "hint": "入群验证的默认超时时间（秒），最少60秒"
+          },
+          "max_verify_attempts": {
+            "description": "最大验证尝试次数",
+            "type": "int",
+            "default": 3
+          },
+          "kick_on_verification_failure": {
+            "description": "验证失败后踢出成员",
+            "type": "bool",
+            "default": false,
+            "hint": "达到最大尝试次数或验证超时后是否移出成员，默认关闭"
+          },
+          "admin_bypass_verify": {
+            "description": "管理员邀请免验证",
+            "type": "bool",
+            "default": true,
+            "hint": "管理员或群主邀请的用户不需要进行验证"
+          },
+          "use_permission": {
+            "description": "使用权限",
+            "type": "string",
+            "default": "admin",
+            "options": ["member", "admin", "owner"],
+            "hint": "谁可以审核入群请求"
+          },
+          "modify_permission": {
+            "description": "修改权限",
+            "type": "string",
+            "default": "admin",
+            "options": ["admin", "owner"],
+            "hint": "谁可以设置审核模式等配置"
+          }
+        }
+      },
+      "recall": {
+        "description": "撤回系统",
+        "type": "object",
+        "items": {
+          "enable_recall": {
+            "description": "启用撤回系统",
+            "type": "bool",
+            "default": false
+          },
+          "enable_self_recall": {
+            "description": "启用自身撤回",
+            "type": "bool",
+            "default": true,
+            "hint": "是否允许机器人撤回自己的消息"
+          },
+          "default_recall_time": {
+            "description": "默认撤回时间",
+            "type": "int",
+            "default": 60,
+            "hint": "消息撤回的默认时间限制（秒）"
+          },
+          "default_recall_mode": {
+            "description": "默认撤回模式",
+            "type": "string",
+            "default": "keyword",
+            "options": ["keyword", "regex", "all"],
+            "hint": "keyword（关键词） / regex（正则） / all（全部）"
+          },
+          "recall_keywords": {
+            "description": "撤回关键词",
+            "type": "list",
+            "items": {
+              "type": "string"
+            },
+            "default": ["广告", "推广", "二维码", "vx", "微信", "qq"],
+            "hint": "包含这些关键词的消息将被自动撤回"
+          },
+          "recall_regex_patterns": {
+            "description": "撤回正则模式",
+            "type": "list",
+            "items": {
+              "type": "string"
+            },
+            "default": [],
+            "hint": "匹配这些正则表达式的消息将被自动撤回"
+          },
+          "enable_admin_recall": {
+            "description": "允许管理员撤回",
+            "type": "bool",
+            "default": true,
+            "hint": "是否允许管理员手动撤回消息"
+          },
+          "recall_notification": {
+            "description": "撤回通知",
+            "type": "bool",
+            "default": false,
+            "hint": "撤回消息时是否发送通知"
+          },
+          "recall_notification_message": {
+            "description": "撤回通知消息",
+            "type": "text",
+            "default": "您的消息包含违规内容，已被撤回",
+            "hint": "开启撤回通知后发送的默认文本；系统会在下一行追加撤回原因。已有群可使用 /设置撤回通知 覆盖"
+          },
+          "use_permission": {
+            "description": "使用权限",
+            "type": "string",
+            "default": "admin",
+            "options": ["member", "admin", "owner"],
+            "hint": "谁可以使用撤回功能"
+          },
+          "modify_permission": {
+            "description": "修改权限",
+            "type": "string",
+            "default": "admin",
+            "options": ["admin", "owner"],
+            "hint": "谁可以设置撤回关键词等配置"
+          },
+          "enable_sensitive_detection": {
+            "description": "启用违规内容检测",
+            "type": "bool",
+            "default": true,
+            "hint": "自动检测并撤回文字、名片、转发、网址中的黄色、暴力、政治、诈骗赌博等违规内容"
+          },
+          "kick_on_severe_violation": {
+            "description": "严重违规自动踢出",
+            "type": "bool",
+            "default": true,
+            "hint": "黄色、暴力、违规卡片或诈骗赌博等高风险内容撤回后自动踢出发言人；管理员和群主跳过"
+          },
+          "sensitive_words": {
+            "description": "违法敏感词列表",
+            "type": "list",
+            "items": {
+              "type": "string"
+            },
+            "default": ["色情", "黄图", "黄片", "裸聊", "裸照", "成人视频", "艳照", "不雅视频", "裸露", "性感视频"],
+            "hint": "仅包含黄色等违法信息的关键词，包含这些词的消息将被自动撤回"
+          }
+        }
+      },
+      "message_cache": {
+        "description": "群消息记录",
+        "type": "object",
+        "items": {
+          "enable_message_cache": {
+            "description": "启用群消息记录",
+            "type": "bool",
+            "default": true,
+            "hint": "仅记录授权且已开机群的消息；支持文本、图片、表情、@、回复、卡片等消息段摘要，供撤回后查询"
+          },
+          "cache_raw_message": {
+            "description": "保留原始消息",
+            "type": "bool",
+            "default": true,
+            "hint": "保留原始 CQ/OneBot 消息段文本，不下载图片或文件本体；关闭后仍保留可读摘要"
+          },
+          "archive_images": {
+            "description": "自动保存群图片",
+            "type": "bool",
+            "default": true,
+            "hint": "在后台保存已授权且开机群的成员图片，不影响消息回复速度；路径为 plugin_data/qqadmin/message_images/群号/日期/用户ID/"
+          },
+          "archive_image_max_mb": {
+            "description": "群图片保存上限(MB)",
+            "type": "int",
+            "default": 20,
+            "hint": "单张群图片最大本地保存大小，运行时限制为 1-100 MB"
+          },
+          "retention_days": {
+            "description": "消息保留天数",
+            "type": "int",
+            "default": 7,
+            "hint": "保留最近 N 天记录，0 表示不自动清理"
+          },
+          "max_messages_per_user": {
+            "description": "单用户最大记录数",
+            "type": "int",
+            "default": 0,
+            "hint": "每个用户在每个群最多保留的消息数量，0 表示不限制"
+          },
+          "use_permission": {
+            "description": "查看权限",
+            "type": "string",
+            "default": "admin",
+            "options": ["admin", "owner"],
+            "hint": "谁可以查看已撤回的消息记录"
+          },
+          "modify_permission": {
+            "description": "修改权限",
+            "type": "string",
+            "default": "admin",
+            "options": ["admin", "owner"],
+            "hint": "谁可以修改消息记录设置"
+          }
+        }
+      },
+      "stats": {
+        "description": "签到、积分与邀请统计",
+        "hint": "群成员可使用 /签到、/签到状态、/签到日历、/签到排行、/排行榜、/我的信息、/群统计；管理员还可使用邀请统计相关命令。",
+        "type": "object",
+        "items": {
+          "enable_stats": {
+            "description": "启用签到与邀请统计",
+            "type": "bool",
+            "default": true,
+            "hint": "同时控制 /签到、/签到状态、/签到日历、/签到排行、/排行榜、/我的信息、/群统计及邀请统计命令；签到按自然日计算，同一天不能重复领取积分"
+          },
+          "signin_base_reward": {
+            "description": "基础签到积分",
+            "type": "int",
+            "default": 10,
+            "hint": "连续签到未达到奖励阶段时，每日获得的积分；设为 0 可关闭基础积分"
+          },
+          "signin_reward_3_days": {
+            "description": "连续 3 天奖励",
+            "type": "int",
+            "default": 30,
+            "hint": "连续签到第 3 至 6 天时，每日获得的积分；设为 0 可关闭该阶段"
+          },
+          "signin_reward_7_days": {
+            "description": "连续 7 天奖励",
+            "type": "int",
+            "default": 100,
+            "hint": "连续签到第 7 至 13 天时，每日获得的积分；设为 0 可关闭该阶段"
+          },
+          "signin_reward_14_days": {
+            "description": "连续 14 天奖励",
+            "type": "int",
+            "default": 200,
+            "hint": "连续签到第 14 至 29 天时，每日获得的积分；设为 0 可关闭该阶段"
+          },
+          "signin_reward_30_days": {
+            "description": "连续 30 天奖励",
+            "type": "int",
+            "default": 500,
+            "hint": "连续签到满 30 天后，每日获得的积分；设为 0 可关闭该阶段"
+          },
+          "signin_mode": {
+            "description": "签到方式",
+            "type": "string",
+            "default": "basic",
+            "options": ["basic", "steam"],
+            "hint": "steam 模式要求成员先绑定数据库中存在的 17 位 SteamID"
+          },
+          "bind_command": {
+            "description": "SteamID 绑定命令",
+            "type": "string",
+            "default": "绑定SteamID",
+            "hint": "默认一个命令；多个命令用 |、逗号或中文顿号分隔，例如 绑定SteamID|绑定Steam；不带斜杠和空格"
+          },
+          "bind_success_message": {
+            "description": "SteamID 绑定成功回复",
+            "type": "text",
+            "default": "",
+            "hint": "支持 {name}、{user_id}、{steam_id}；留空使用默认回复"
+          },
+          "duplicate_steam_message": {
+            "description": "SteamID 重复回复",
+            "type": "text",
+            "default": "",
+            "hint": "成员提交已绑定 SteamID 时使用"
+          },
+          "steam_not_found_message": {
+            "description": "SteamID 不存在回复",
+            "type": "text",
+            "default": "",
+            "hint": "SteamID 不在当前 user_list 表时使用"
+          },
+          "steam_database_error_message": {
+            "description": "SteamID 数据库错误回复",
+            "type": "text",
+            "default": "",
+            "hint": "数据库不可用或缺少 user_list.steam_id 时使用"
+          },
+          "database_reward_error_message": {
+            "description": "Steam 奖励写入失败回复",
+            "type": "text",
+            "default": "",
+            "hint": "支持 {name}、{user_id}、{steam_id}、{reward}；留空复用数据库错误回复"
+          },
+          "database_already_signed_message": {
+            "description": "数据库重复签到回复",
+            "type": "text",
+            "default": "",
+            "hint": "数据库 sign_log 已有当前周期记录时使用；留空使用默认回复"
+          },
+          "database_path": {
+            "description": "Windows 本地数据库路径",
+            "type": "string",
+            "default": "",
+            "hint": "相对路径以插件目录为基准；留空使用 sql/beijixiong.db"
+          },
+          "database_profile": {
+            "description": "当前数据库方案",
+            "type": "string",
+            "default": "",
+            "hint": "填写 database_profiles 中的 id"
+          },
+          "database_profiles": {
+            "description": "多个服务器数据库方案",
+            "type": "list",
+            "items": {"type": "string"},
+            "default": [],
+            "hint": "每行 JSON：{\"id\":\"main\",\"name\":\"主服\",\"path\":\"data/main.db\"}；不保存 FTP 密码"
+          },
+          "currency_column": {
+            "description": "Steam 奖励余额字段",
+            "type": "string",
+            "default": "amount",
+            "options": ["amount", "integral", "normal_integral", "coins", "fragments", "dlb_num"],
+            "hint": "默认写入 user_list.amount；仅允许数据库已有的白名单字段"
+          },
+          "database_sync": {
+            "description": "将签到奖励同步到 SCUM 数据库",
+            "type": "bool",
+            "default": false,
+            "hint": "Steam 模式会自动开启；普通签到默认只保留原有本地积分"
+          },
+          "auto_update_on_join": {
+            "description": "自动更新入群状态",
+            "type": "bool",
+            "default": true,
+            "hint": "被邀请用户正式入群时记录 joined 状态；退群时记录 left，成功入群累计不会丢失"
+          },
+          "abnormal_invite_threshold": {
+            "description": "异常邀请阈值",
+            "type": "int",
+            "default": 5,
+            "hint": "单日邀请超过此数量时，/检查异常邀请 会列出该邀请人"
+          },
+          "use_permission": {
+            "description": "使用权限",
+            "type": "string",
+            "default": "member",
+            "options": ["member", "admin", "owner"],
+            "hint": "谁可以查看统计信息"
+          },
+          "modify_permission": {
+            "description": "修改权限",
+            "type": "string",
+            "default": "admin",
+            "options": ["admin", "owner"],
+            "hint": "谁可以设置统计相关配置"
+          }
+        }
+      },
+      "text_to_image": {
+        "description": "文转图",
+        "type": "object",
+        "items": {
+          "enable_text_to_image": {
+            "description": "启用文转图",
+            "type": "bool",
+            "default": false,
+            "hint": "开启后机器人所有文字回复将转为图片发送"
+          },
+          "font_size": {
+            "description": "字体大小",
+            "type": "int",
+            "default": 16,
+            "hint": "文转图时使用的字体大小"
+          },
+          "font_color": {
+            "description": "字体颜色",
+            "type": "string",
+            "default": "#333333",
+            "hint": "文转图时使用的字体颜色（十六进制）"
+          },
+          "bg_color": {
+            "description": "背景颜色",
+            "type": "string",
+            "default": "#ffffff",
+            "hint": "文转图时使用的背景颜色（十六进制）"
+          },
+          "line_spacing": {
+            "description": "行间距",
+            "type": "int",
+            "default": 4,
+            "hint": "文转图时的行间距（像素）"
+          },
+          "padding": {
+            "description": "内边距",
+            "type": "int",
+            "default": 20,
+            "hint": "图片边缘与文字的距离（像素）"
+          },
+          "modify_permission": {
+            "description": "修改权限",
+            "type": "string",
+            "default": "admin",
+            "options": ["admin", "owner"],
+            "hint": "谁可以开关文转图功能"
+          }
+        }
+      },
+      "welcome": {
+        "description": "入群欢迎",
+        "type": "object",
+        "items": {
+          "enable_welcome": {
+            "description": "启用入群欢迎",
+            "type": "bool",
+            "default": false,
+            "hint": "仅在白名单或已授权且已开机群发送；未授权/关机群保持静默"
+          },
+          "enable_auto_welcome": {
+            "description": "启用自动欢迎",
+            "type": "bool",
+            "default": false,
+            "hint": "自动检测新成员并发送欢迎消息；当前按入群事件即时处理，发送仍受授权和开机门禁限制"
+          },
+          "welcome_check_interval": {
+            "description": "欢迎检查间隔",
+            "type": "int",
+            "default": 30,
+            "hint": "兼容旧配置项；当前使用入群事件即时处理，不会额外延迟欢迎消息"
+          },
+          "default_welcome_delay": {
+            "description": "默认欢迎延迟",
+            "type": "int",
+            "default": 0,
+            "hint": "入群欢迎消息的默认延迟发送时间（秒）"
+          },
+          "default_welcome_message": {
+            "description": "默认欢迎消息",
+            "type": "text",
+            "default": "欢迎 {user_name} 加入本群！",
+            "hint": "支持变量: {user_id}, {user_name}, {group_id}, {time}；未通过发送门禁时不会发送"
+          },
+          "enable_farewell": {
+            "description": "启用退群通知",
+            "type": "bool",
+            "default": false,
+            "hint": "成员退群时发送通知；通知同样受授权/白名单和开机发送门禁限制"
+          },
+          "default_farewell_message": {
+            "description": "默认退群消息",
+            "type": "text",
+            "default": "{user_name} 离开了本群",
+            "hint": "支持变量: {user_id}, {user_name}, {group_id}, {time}；未通过发送门禁时不会发送"
+          },
+          "welcome_keywords": {
+            "description": "欢迎触发关键词",
+            "type": "list",
+            "items": {
+              "type": "string"
+            },
+            "default": ["欢迎", "welcome", "入群"],
+            "hint": "当群内消息包含这些关键词时触发欢迎消息"
+          },
+          "at_new_member": {
+            "description": "艾特新人",
+            "type": "bool",
+            "default": true,
+            "hint": "发送入群欢迎消息时是否艾特新成员；可使用 /设置艾特新人 覆盖当前群设置"
+          },
+          "auto_reply_enabled": {
+            "description": "启用自动回复",
+            "type": "bool",
+            "default": true,
+            "hint": "兼容欢迎系统的关键词自动回复开关；所有实际发送仍受授权/白名单和开机门禁限制"
+          },
+          "use_permission": {
+            "description": "使用权限",
+            "type": "string",
+            "default": "member",
+            "options": ["member", "admin", "owner"],
+            "hint": "谁可以触发欢迎消息"
+          },
+          "modify_permission": {
+            "description": "修改权限",
+            "type": "string",
+            "default": "admin",
+            "options": ["admin", "owner"],
+            "hint": "谁可以设置欢迎语等配置"
+          }
+        }
+      },
+      "keyword_filter": {
+        "description": "关键词过滤",
+        "type": "object",
+        "items": {
+          "enable_keyword_filter": {
+            "description": "启用关键词过滤",
+            "type": "bool",
+            "default": false,
+            "hint": "是否启用全局关键词过滤功能"
+          },
+          "filter_keywords": {
+            "description": "过滤关键词",
+            "type": "list",
+            "items": {
+              "type": "string"
+            },
+            "default": ["广告", "推广", "二维码", "vx", "微信", "qq", "群号", "拉人"],
+            "hint": "包含这些关键词的消息将被处理"
+          },
+          "filter_regex_patterns": {
+            "description": "过滤正则模式",
+            "type": "list",
+            "items": {
+              "type": "string"
+            },
+            "default": [],
+            "hint": "匹配这些正则表达式的消息将被处理"
+          },
+          "filter_action": {
+            "description": "过滤动作",
+            "type": "string",
+            "default": "warn",
+            "options": ["warn", "delete", "delete_warn", "mute", "kick", "blacklist"],
+            "hint": "warn（警告）/ delete（仅撤回）/ delete_warn（撤回并警告）/ mute（禁言）/ kick（踢出）/ blacklist（拉黑）"
+          },
+          "filter_mute_duration": {
+            "description": "过滤禁言时长",
+            "type": "int",
+            "default": 300,
+            "hint": "触发过滤后禁言的时长（秒）"
+          },
+          "warn_message": {
+            "description": "警告消息",
+            "type": "text",
+            "default": "⚠️ 您的消息包含敏感内容，请遵守群规！",
+            "hint": "触发 warn 动作时发送；禁言失败也会使用。支持变量: {user_id}, {group_id}, {keyword}"
+          },
+          "warning_messages": {
+            "description": "随机警告消息",
+            "type": "list",
+            "items": {
+              "type": "string"
+            },
+            "default": ["⚠️ 您的消息包含敏感内容，请遵守群规！"],
+            "hint": "warn 或 delete_warn 时从列表随机选择；为空时回退到上方单条警告消息。支持变量: {user_id}, {group_id}, {keyword}"
+          },
+          "mute_message": {
+            "description": "禁言提示消息",
+            "type": "text",
+            "default": "{user_id} 已被禁言，请遵守群规。",
+            "hint": "触发 mute 动作成功后发送。支持变量: {user_id}, {group_id}, {keyword}"
+          },
+          "kick_message": {
+            "description": "踢出提示消息",
+            "type": "text",
+            "default": "{user_id} 已被移出本群。",
+            "hint": "触发 kick 动作成功后发送。支持变量: {user_id}, {group_id}, {keyword}"
+          },
+          "blacklist_message": {
+            "description": "拉黑提示消息",
+            "type": "text",
+            "default": "{user_id} 已加入黑名单。",
+            "hint": "触发 blacklist 动作成功后发送。支持变量: {user_id}, {group_id}, {keyword}"
+          },
+          "enable_log": {
+            "description": "启用日志记录",
+            "type": "bool",
+            "default": true,
+            "hint": "是否记录关键词过滤事件"
+          },
+          "admin_bypass_filter": {
+            "description": "管理员跳过过滤",
+            "type": "bool",
+            "default": true,
+            "hint": "管理员和群主是否不受关键词过滤限制"
+          },
+          "use_permission": {
+            "description": "使用权限",
+            "type": "string",
+            "default": "admin",
+            "options": ["member", "admin", "owner"],
+            "hint": "谁可以使用关键词过滤相关命令"
+          },
+          "modify_permission": {
+            "description": "修改权限",
+            "type": "string",
+            "default": "admin",
+            "options": ["admin", "owner"],
+            "hint": "谁可以设置关键词过滤配置"
+          }
+        }
+      },
+      "player_reply": {
+        "description": "用户专属回复",
+        "type": "object",
+        "items": {
+          "enable_player_reply": {
+            "description": "启用用户专属回复",
+            "type": "bool",
+            "default": true,
+            "hint": "是否启用用户专属回复功能"
+          },
+          "use_permission": {
+            "description": "使用权限",
+            "type": "string",
+            "default": "admin",
+            "options": ["member", "admin", "owner"],
+            "hint": "谁可以添加/删除用户专属回复"
+          },
+          "default_at_user": {
+            "description": "默认艾特用户",
+            "type": "bool",
+            "default": true,
+            "hint": "新添加专属回复时是否默认艾特用户"
+          },
+          "enable_at_user": {
+            "description": "发送时艾特用户",
+            "type": "bool",
+            "default": true,
+            "hint": "触发专属回复发送消息时是否实际艾特用户（全局开关，关闭后所有用户专属回复都不艾特）"
+          }
+        }
+      },
+      "timed_message": {
+        "description": "定时消息与定时禁言",
+        "hint": "Cron 固定为五段“分 时 日 月 周”：周一=0、周日=6；支持 *、*/步长、范围和列表。示例：每天 09:00 为 0 9 * * *。",
+        "type": "object",
+        "items": {
+          "enable_timed_message": {
+            "description": "启用定时消息",
+            "type": "bool",
+            "default": false,
+            "hint": "启用后可使用 /定时播报 HH:MM 内容、/定时播报 @全体 HH:MM 内容，或“分 时 日 月 周”五段 Cron 任务；只在白名单/授权且已开机群发送"
+          },
+          "use_permission": {
+            "description": "使用权限",
+            "type": "string",
+            "default": "admin",
+            "options": ["member", "admin", "owner"],
+            "hint": "谁可以使用 /查看定时消息；添加、删除和开关任务使用下方修改权限"
+          },
+          "modify_permission": {
+            "description": "修改权限",
+            "type": "string",
+            "default": "admin",
+            "options": ["admin", "owner"],
+            "hint": "谁可以添加、删除、清空或开关定时消息，以及添加定时全体禁言/解禁任务"
+          }
+        }
+      },
+      "sub_admin": {
+        "description": "分群管理员",
+        "type": "object",
+        "items": {
+          "enable_sub_admin": {
+            "description": "启用分群管理员",
+            "type": "bool",
+            "default": false,
+            "hint": "是否启用分群管理员功能"
+          },
+          "modify_permission": {
+            "description": "修改权限",
+            "type": "string",
+            "default": "owner",
+            "options": ["admin", "owner"],
+            "hint": "谁可以添加/删除分群管理员"
+          }
+        }
+      }
+    }
+  }
+}

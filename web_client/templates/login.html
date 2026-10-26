@@ -1,0 +1,18 @@
+{% extends "user_base.html" %}
+{% block title %}登录 · {{ portal_name }}{% endblock %}
+{% block page_class %}auth-page{% endblock %}
+{% block content %}
+<section class="auth-card">
+  <div class="eyebrow">CUSTOMER PORTAL</div>
+  <h1>登录客户中心</h1>
+  <p class="muted">登录后管理本人已授权群的群管功能。</p>
+  <form method="post" action="{{ auth_prefix|default('/user') }}/login" class="form-stack">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <label>账号<input name="username" autocomplete="username" maxlength="32" required autofocus></label>
+    <label>密码<input type="password" name="password" autocomplete="current-password" maxlength="128" required></label>
+    <label>群聊授权卡密（可选）<input name="license_key" type="password" autocomplete="off" maxlength="256" placeholder="首次登录可直接绑定已激活卡密"><small>填写后会在登录成功前自动登记对应群聊；不填写也可以登录后在控制台登记。</small></label>
+    <button class="button primary wide" type="submit">登录</button>
+  </form>
+  <p class="auth-switch">首次使用？<a href="/user/register">使用邮箱验证码注册</a>　·　<a href="/user/forgot-password">忘记密码</a></p>
+</section>
+{% endblock %}

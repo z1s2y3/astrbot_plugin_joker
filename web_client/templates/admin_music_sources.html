@@ -1,0 +1,58 @@
+{% extends "admin_base.html" %}
+{% block title %}音乐源服务 · {{ portal_name }}{% endblock %}
+{% block content %}
+<div class="websocket-page">
+  <a class="back-link" href="/admin">← 返回管理后台</a>
+  {% set soda = music_sources.soda %}
+  {% set signer = music_sources.music_card_signer %}
+  {% set cookies = music_sources.platform_cookies %}
+  <section class="group-hero">
+    <div>
+      <div class="eyebrow">MUSIC SOURCES</div>
+      <h1>音乐源服务</h1>
+      <div class="status-line"><span>Linux 后台配置</span><span>·</span><span>Windows 心跳执行</span></div>
+    </div>
+    <span class="pill {{ 'active' if signer.enabled and signer.sign_url else 'expired' }}">{{ '名片默认配置已就绪' if signer.enabled and signer.sign_url else '未就绪' }}</span>
+  </section>
+
+  <div class="license-warning neutral"><strong>后台专属</strong><span>这里保存音乐平台 Cookie、汽水兼容服务和名片签名配置。Cookie 会加密保存，只通过认证心跳下发到 Windows；分群和玩家只选择音乐平台，不填写接口或 Cookie。</span></div>
+
+  <form method="post" action="/admin/music-sources" class="settings-form websocket-settings-form">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <section class="panel management-panel websocket-config-section">
+      <div class="section-heading"><div><h2>音乐平台 Cookie</h2><p>每个平台填写自己的登录 Cookie，用于搜索、解析和生成可播放名片。留空表示保留已保存内容。</p></div><span class="pill neutral">{{ cookies.qq.cookie_configured + cookies['163'].cookie_configured + cookies.kugou.cookie_configured + cookies.soda.cookie_configured }} / 4 已设置</span></div>
+      <fieldset>
+        <div class="form-grid two">
+          <label>QQ 音乐 Cookie<input type="password" name="cookie_qq" autocomplete="new-password" maxlength="8192" placeholder="{% if cookies.qq.cookie_configured %}已保存，留空保留{% else %}粘贴 QQ 音乐 Cookie{% endif %}"><small>只在请求 QQ 音乐时使用，不会发给其他平台。</small></label>
+          <label>网易云音乐 Cookie<input type="password" name="cookie_163" autocomplete="new-password" maxlength="8192" placeholder="{% if cookies['163'].cookie_configured %}已保存，留空保留{% else %}粘贴网易云 Cookie{% endif %}"><small>只在请求网易云音乐时使用。</small></label>
+          <label>酷狗音乐 Cookie<input type="password" name="cookie_kugou" autocomplete="new-password" maxlength="8192" placeholder="{% if cookies.kugou.cookie_configured %}已保存，留空保留{% else %}粘贴酷狗 Cookie{% endif %}"><small>只在请求酷狗音乐时使用。</small></label>
+          <label>汽水音乐 Cookie<input type="password" name="cookie_soda" autocomplete="new-password" maxlength="8192" placeholder="{% if cookies.soda.cookie_configured %}已保存，留空保留{% else %}粘贴汽水 Cookie{% endif %}"><small>只在后台汽水服务请求中使用。</small></label>
+        </div>
+      </fieldset>
+    </section>
+    <section class="panel management-panel websocket-config-section">
+      <div class="section-heading"><div><h2>汽水音乐兼容服务</h2><p>填写可提供 <code>/api/capabilities</code>、<code>/search</code> 与 <code>/song/detail</code> 的自建服务根地址。</p></div><span class="pill {{ 'active' if soda.api_key_configured else 'neutral' }}">{{ '密钥已保存' if soda.api_key_configured else '无需密钥或未设置' }}</span></div>
+      <fieldset>
+        <label class="switch-row"><span><strong>启用汽水音乐</strong><small>关闭后即使有分群勾选，也不会向该服务请求歌曲。</small></span><input type="hidden" name="soda_enabled" value="off"><input type="checkbox" name="soda_enabled" value="on" {% if soda.enabled %}checked{% endif %}></label>
+        <div class="form-grid two">
+          <label>服务根地址<input name="soda_base_url" value="{{ soda.base_url }}" maxlength="2048" placeholder="https://music-api.example.com" inputmode="url"><small>服务必须能被 Windows 机器人访问；可包含反代路径，不可含账号、查询参数或片段。</small></label>
+          <label>服务密钥（可选）<input type="password" name="soda_api_key" autocomplete="new-password" placeholder="{% if soda.api_key_configured %}已保存，留空保留{% else %}没有鉴权时留空{% endif %}"><small>仅以 Bearer 方式传给自建服务，加密保存，不显示给分群或玩家。</small></label>
+        </div>
+        <div class="form-submit-row"><small>先保存，再检测当前已保存的服务连通性。</small><button class="button secondary" name="operation" value="test_soda" formnovalidate type="submit">检测汽水通联</button><button class="button" type="submit">保存音乐源</button></div>
+      </fieldset>
+    </section>
+    <section class="panel management-panel websocket-config-section">
+      <div class="section-heading"><div><h2>音乐名片签名服务</h2><p>默认地址已内置，通常只需填写平台 Cookie。用户端不需要填写网站、账号或密钥，只需验证主人发放的对应卡密。</p></div><span class="pill {{ 'active' if signer.enabled and signer.sign_url else 'neutral' }}">{{ '已配置' if signer.enabled and signer.sign_url else '未启用' }}</span></div>
+      <fieldset>
+        <label class="switch-row"><span><strong>启用后台签名服务</strong><small>启用后，Windows 通过认证心跳获取此配置，点歌时优先生成可播放音乐名片。</small></span><input type="hidden" name="signer_enabled" value="off"><input type="checkbox" name="signer_enabled" value="on" {% if signer.enabled %}checked{% endif %}></label>
+        <div class="form-grid two">
+          <label>签名网站地址<input name="signer_url" value="{{ signer.sign_url }}" maxlength="2048" placeholder="默认使用内置地址" inputmode="url"><small>首次使用已经自动填写；只有更换自建签名服务时才需要修改。</small></label>
+          <label>签名服务密钥（可选）<input type="password" name="signer_api_key" autocomplete="new-password" placeholder="{% if signer.api_key_configured %}已保存，留空保留{% else %}没有鉴权时留空{% endif %}"><small>仅后台保存并加密下发给 Windows，分群管理员和玩家不可见。</small></label>
+          <label>签名服务 Cookie（可选）<input type="password" name="signer_cookie" autocomplete="new-password" maxlength="8192" placeholder="{% if signer.cookie_configured %}已保存，留空保留{% else %}签名服务需要登录态时填写{% endif %}"><small>签名网站需要登录态时填写；没有要求可留空。</small></label>
+        </div>
+        <div class="form-submit-row"><small>保存后等待 Windows 下一次心跳；检测使用后台当前已保存配置。</small><button class="button secondary" name="operation" value="apply_defaults" formnovalidate type="submit">应用默认配置</button><button class="button secondary" name="operation" value="test_signer" formnovalidate type="submit">检测签名通联</button><button class="button" type="submit">保存音乐源</button></div>
+      </fieldset>
+    </section>
+  </form>
+</div>
+{% endblock %}

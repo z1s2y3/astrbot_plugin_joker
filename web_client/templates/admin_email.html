@@ -1,0 +1,55 @@
+{% extends "admin_base.html" %}
+{% block title %}邮箱设置 · {{ portal_name }}{% endblock %}
+{% block content %}
+<a class="back-link" href="/admin">← 返回管理后台</a>
+<section class="hero compact">
+  <div><div class="eyebrow">EMAIL DELIVERY</div><h1>邮箱验证码设置</h1><p class="muted">用于客户注册和找回密码。</p></div>
+  <span class="pill {{ 'active' if email_config.enabled else 'expired' }}">{{ '✅️ 邮箱验证已开启' if email_config.enabled else '❌️ 邮箱验证未开启' }}</span>
+</section>
+
+<div class="dashboard-columns">
+  <section class="panel">
+    <div class="section-heading"><div><h2>SMTP 发信配置</h2><p>密码或授权码加密保存，不回显。</p></div></div>
+    <form method="post" action="/admin/email" class="form-stack">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <label class="switch-row"><span><strong>启用邮箱验证</strong><small>关闭后不能注册或通过邮箱找回密码，已有账号仍可正常登录。</small></span><input type="checkbox" name="enabled" value="on" {% if email_config.enabled %}checked{% endif %}></label>
+      <div class="form-grid two">
+        <label>SMTP 服务器<input name="host" value="{{ email_config.host }}" placeholder="smtp.qq.com" maxlength="253"></label>
+        <label>SMTP 端口<input type="number" name="port" value="{{ email_config.port }}" min="1" max="65535" required></label>
+      </div>
+      <label>加密方式<select name="transport"><option value="ssl" {% if email_config.transport == 'ssl' %}selected{% endif %}>SSL（通常为 465）</option><option value="starttls" {% if email_config.transport == 'starttls' %}selected{% endif %}>STARTTLS（通常为 587）</option><option value="plain" {% if email_config.transport == 'plain' %}selected{% endif %}>无加密（不建议）</option></select></label>
+      <div class="form-grid two">
+        <label>SMTP 用户名<input name="username" value="{{ email_config.username }}" autocomplete="username" maxlength="320" placeholder="通常为完整邮箱地址"><small>不需要 SMTP 登录的邮件服务器可留空。</small></label>
+        <label>SMTP 密码或授权码<input type="password" name="password" autocomplete="new-password" maxlength="512" placeholder="{% if email_config.password_configured %}已保存，留空则保持不变{% else %}邮箱授权码或应用专用密码{% endif %}"><small>{% if email_config.password_configured %}已保存且不会显示；填写新值会替换。{% else %}QQ、163 等邮箱请填写 SMTP 授权码，而非网页登录密码。{% endif %}</small></label>
+      </div>
+      <div class="form-grid two">
+        <label>发件邮箱<input type="email" name="sender_email" value="{{ email_config.sender_email }}" autocomplete="email" maxlength="320" placeholder="noreply@example.com"></label>
+        <label>发件人名称<input name="sender_name" value="{{ email_config.sender_name }}" maxlength="80" placeholder="Joker 群管客户中心"></label>
+      </div>
+      <label>反馈通知邮箱<input type="email" name="feedback_recipient" value="{{ email_config.feedback_recipient }}" autocomplete="email" maxlength="320" placeholder="你的常用收件邮箱"><small>新反馈发送到此邮箱；留空则通知首位活跃管理员。</small></label>
+      <label>验证码有效期（分钟）<input type="number" name="code_ttl_minutes" value="{{ email_config.code_ttl_minutes }}" min="5" max="30" required><small>同一邮箱 60 秒一次，15 分钟最多 3 次。</small></label>
+      <button class="button primary" type="submit">保存邮箱设置</button>
+    </form>
+  </section>
+
+  <section class="panel">
+    <div class="section-heading"><div><h2>发送测试邮件</h2><p>保存配置后测试 SMTP。</p></div></div>
+    <form method="post" action="/admin/email/test" class="form-stack">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <label>测试收件邮箱<input type="email" name="test_email" autocomplete="email" maxlength="320" required></label>
+      <button class="button secondary" type="submit" {% if not email_config.enabled %}disabled{% endif %}>发送测试邮件</button>
+    </form>
+    <div class="email-provider-grid" aria-label="常用邮箱参数">
+      <div class="email-provider"><strong>QQ 邮箱</strong><small>smtp.qq.com<br>465 / SSL<br>填写 SMTP 授权码</small></div>
+      <div class="email-provider"><strong>网易 163</strong><small>smtp.163.com<br>465 / SSL<br>填写客户端授权密码</small></div>
+      <div class="email-provider"><strong>Gmail</strong><small>smtp.gmail.com<br>465 / SSL 或 587 / STARTTLS<br>填写应用专用密码</small></div>
+      <div class="email-provider"><strong>Outlook</strong><small>smtp.office365.com<br>587 / STARTTLS<br>使用账户密码或应用密码</small></div>
+    </div>
+  </section>
+</div>
+
+<section class="panel audit-panel">
+  <div class="section-heading"><div><h2>注册与群授权</h2><p>账号登录和群卡密分开。</p></div></div>
+  <ol class="compact-steps"><li>用邮箱验证码注册网页账号。</li><li>在目标 QQ 群执行 <code>/激活卡密 卡密</code>。</li><li>登录网页，登记当前群卡密。</li></ol>
+</section>
+{% endblock %}

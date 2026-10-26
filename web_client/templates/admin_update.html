@@ -1,0 +1,69 @@
+{% extends "admin_base.html" %}
+{% block title %}网页更新 · {{ portal_name }}{% endblock %}
+{% block content %}
+<a class="back-link" href="/admin">← 返回管理后台</a>
+<a class="button ghost small" href="/admin/update-log">查看更新日志</a>
+<section class="hero compact" data-update-monitor data-status-url="/admin/update/status" data-monitor-active="{{ '1' if update_queued or update_status.state in ['queued', 'installing'] else '0' }}">
+  <div><div class="eyebrow">PORTAL UPDATE</div><h1>网页后台更新</h1><p class="muted">上传部署 ZIP，服务器后台验证并重启。</p></div>
+  <div class="hero-stat" title="仅在安装器健康检查通过后更新">
+    <strong data-installed-release-version>{{ update_status.installed_release.version }}</strong>
+    <span>当前运行版本</span>
+  </div>
+  <span class="pill {{ 'active' if update_status.state == 'success' else '' }}" data-update-state>{{ update_status.state }}</span>
+</section>
+
+{% if update_queued %}
+<div class="license-warning neutral"><strong>更新任务已排队</strong><span>上传已完成，等待验证和安装。</span><a class="button secondary small" href="/admin/update">刷新更新状态</a></div>
+{% endif %}
+
+<div class="license-warning neutral"><strong>只更新网页服务器</strong><span>不会修改 Windows 插件、QQ 配置、消息缓存或登录资料。</span></div>
+
+<div class="dashboard-columns">
+  <section class="panel">
+    <div class="section-heading"><div><h2>上传并更新</h2><p>仅接受 Joker 部署 ZIP，最大 80 MB；更新时网页短暂重启。服务器会把本次包临时放入 <code>{{ update_root }}</code>，完成后自动删除。</p></div></div>
+    <form method="post" action="/admin/update" enctype="multipart/form-data" class="form-stack">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <label>网页部署 ZIP 包<input type="file" name="update_package" accept=".zip,application/zip" required><small>文件名应类似 <code>Joker_Baota_Remote_vX.Y.Z-all-in-one.zip</code>。上传后由服务器验证安装。</small></label>
+      <label>服务器更新授权码<input type="password" name="update_authorization" autocomplete="one-time-code" minlength="24" maxlength="256" required><small>宝塔终端执行 <code>cat /root/joker-web-update-key.txt</code> 查看；不会保存或写入日志。</small></label>
+      <button class="button primary" type="submit" data-busy-label="上传中，请保持本页打开">上传并排队更新</button>
+    </form>
+  </section>
+  <section class="panel">
+    <div class="section-heading"><div><h2>{{ '当前排队状态' if update_queued else '最近更新状态' }}</h2><p>验证、安装和重启状态。</p></div></div>
+    <div class="item-list">
+      <div class="list-item"><div><strong>当前运行版本</strong><p data-installed-release-detail>{{ update_status.installed_release.message }}</p></div><span class="pill {{ 'active' if update_status.installed_release.known else 'expired' }}" data-installed-release-version>{{ update_status.installed_release.version }}</span></div>
+      <div class="list-item"><div><strong>当前部署包</strong><p data-installed-release-package>{{ update_status.installed_release.package or '未记录' }}</p></div></div>
+      <div class="list-item"><div><strong>安装完成时间（中国标准时间）</strong><p data-installed-release-time>{{ update_status.installed_release.installed_at or '未记录' }}</p></div></div>
+      <div class="list-item"><div><strong>状态</strong><p data-update-message>{{ update_status.message }}</p></div><span class="pill {{ 'active' if update_status.state == 'success' else 'expired' if update_status.state == 'failed' else '' }}" data-update-state>{{ update_status.state }}</span></div>
+      <div class="list-item"><div><strong>更新时间（中国标准时间）</strong><p data-update-time>{{ update_status.updated_at or '暂无' }}</p></div></div>
+      <div class="list-item"><div><strong>更新包</strong><p data-update-package>{{ update_status.package or '暂无' }}</p></div></div>
+      <div class="list-item"><div><strong>更新包版本</strong><p data-update-release-version>{{ update_status.release_version or '等待服务器验证' }}</p></div></div>
+    </div>
+  </section>
+</div>
+
+<section class="panel audit-panel"><div class="section-heading"><div><h2>堡塔终端更新</h2><p>后台上传不可用时，把完整部署 ZIP 上传到服务器后，在宝塔终端执行统一更新命令。命令会先校验包内清单，再由安装器原子替换运行目录。</p></div></div><pre class="code-tip"># 将 X.Y.Z 替换为实际版本；ZIP 不要放进正在运行的 joker-web 目录。
+joker-webctl --update {{ update_root }}/Joker_Baota_Remote_vX.Y.Z-all-in-one.zip
+
+# 查看结果
+joker-webctl --show-version
+joker-webctl --check</pre></section>
+
+<section class="panel audit-panel">
+  <div class="section-heading"><div><h2>部署执行记录</h2><p>每次后台上传、验证和安装的最终结果会保存在服务器更新目录中，更新成功或失败都可以追溯。</p></div></div>
+  <div class="item-list release-note-list">
+  {% for item in deployment_history %}
+    <article class="list-item release-note">
+      <div>
+        <h3>{{ item['release_version'] or '未验证版本' }} · {{ item['state'] }}</h3>
+        <p>{{ item['updated_at'] or '时间未知' }}{% if item['package'] %} · {{ item['package'] }}{% endif %}</p>
+        <p>{{ item['message'] }}</p>
+      </div>
+      <span class="pill {{ 'active' if item['state'] == 'success' else 'expired' if item['state'] == 'failed' else '' }}">{{ '成功' if item['state'] == 'success' else '失败' if item['state'] == 'failed' else item['state'] }}</span>
+    </article>
+  {% else %}
+    <div class="empty-state compact">暂无后台部署执行记录。</div>
+  {% endfor %}
+  </div>
+</section>
+{% endblock %}

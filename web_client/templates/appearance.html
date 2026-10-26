@@ -1,0 +1,106 @@
+{% extends "admin_base.html" if current_user.is_admin else "user_base.html" %}
+{% block title %}网页外观 · {{ portal_name }}{% endblock %}
+{% block page_class %}appearance-page{% endblock %}
+{% block content %}
+<a class="back-link" href="{{ '/admin' if current_user.is_admin else '/user' }}">← {{ '返回管理后台' if current_user.is_admin else '返回群组控制台' }}</a>
+
+<section class="hero compact">
+  <div>
+    <div class="eyebrow">PORTAL APPEARANCE</div>
+    <h1>昼夜背景与外观</h1>
+    <p class="muted">背景图片只加密传输并保存到 Linux 网页数据库；不会同步到 Windows 机器人、群聊配置或 CMD 日志。</p>
+  </div>
+  <div class="hero-stat"><strong>{{ owned_assets|length }}</strong><span>我的背景图</span></div>
+</section>
+
+<section class="panel appearance-panel">
+  <div class="section-heading"><div><h2>当前外观</h2><p>“自动”会按浏览器本地时间在 06:00–18:00 使用白天外观，其余时间使用夜间外观。没有选择图片时使用系统默认背景。</p></div></div>
+  <form method="post" action="{{ appearance_prefix }}" enctype="multipart/form-data" class="management-form appearance-form">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <fieldset>
+      <div class="form-grid three">
+        <label>切换模式
+          <select name="mode">
+            <option value="auto" {% if preference.mode == 'auto' %}selected{% endif %}>自动（随本地昼夜）</option>
+            <option value="day" {% if preference.mode == 'day' %}selected{% endif %}>始终白天</option>
+            <option value="night" {% if preference.mode == 'night' %}selected{% endif %}>始终夜间</option>
+          </select>
+        </label>
+        <label>白天背景
+          <select name="day_asset_id">
+            <option value="">系统默认背景</option>
+            {% for asset in selectable_assets %}<option value="{{ asset.id }}" {% if preference.day_asset_id == asset.id %}selected{% endif %}>{{ '我的图片' if asset.owner_user_id == current_user.id else '共享图片' }} #{{ asset.id }} · {{ asset.width }}×{{ asset.height }}{% if asset.is_shared %} · 可共享{% endif %}</option>{% endfor %}
+          </select>
+        </label>
+        <label>夜间背景
+          <select name="night_asset_id">
+            <option value="">系统默认背景</option>
+            {% for asset in selectable_assets %}<option value="{{ asset.id }}" {% if preference.night_asset_id == asset.id %}selected{% endif %}>{{ '我的图片' if asset.owner_user_id == current_user.id else '共享图片' }} #{{ asset.id }} · {{ asset.width }}×{{ asset.height }}{% if asset.is_shared %} · 可共享{% endif %}</option>{% endfor %}
+          </select>
+        </label>
+      </div>
+      <div class="form-grid two appearance-upload-grid">
+        <label>上传新的白天背景
+          <input type="file" name="day_image" accept="image/png,image/jpeg,image/webp">
+          <small>支持 PNG、JPG、WebP；不再按原始文件大小限制。服务器会校验真实格式和像素，并自动生成加载更快的 WebP 背景。</small>
+          <span class="checkbox-box compact-check"><input type="checkbox" name="day_image_shared"> 允许其他已登录用户使用这张图片</span>
+        </label>
+        <label>上传新的夜间背景
+          <input type="file" name="night_image" accept="image/png,image/jpeg,image/webp">
+          <small>图片由服务器校验真实格式，不接受 SVG 或外部图片链接。</small>
+          <span class="checkbox-box compact-check"><input type="checkbox" name="night_image_shared"> 允许其他已登录用户使用这张图片</span>
+        </label>
+      </div>
+      <div class="form-submit-row"><small>上传相同图片会复用数据库中的同一份个人素材，不会重复占用空间。</small><button class="button primary" type="submit">保存网页外观</button></div>
+    </fieldset>
+  </form>
+</section>
+
+<section class="panel appearance-panel">
+  <div class="section-heading"><div><h2>我的背景图片</h2><p>默认仅你自己可见。开启共享后，其他已登录用户才能在自己的外观页中选择该图片；关闭共享不会删除原图片。</p></div></div>
+  <div class="theme-asset-grid">
+  {% for asset in owned_assets %}
+    <article class="theme-asset-card">
+      <img src="/theme/assets/{{ asset.id }}" alt="我的背景图片 #{{ asset.id }}" loading="lazy">
+      <div><strong>图片 #{{ asset.id }}</strong><small>{{ asset.width }} × {{ asset.height }} · {{ '可共享' if asset.is_shared else '仅自己可用' }}</small></div>
+      <form method="post" action="{{ appearance_prefix }}/assets/{{ asset.id }}/sharing" class="theme-share-form">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <label class="switch-row"><span><strong>允许其他用户使用</strong><small>只共享背景，不会共享账号、分群或机器人配置。</small></span><input type="checkbox" name="is_shared" value="on" {% if asset.is_shared %}checked{% endif %}></label>
+        <button class="button secondary wide" type="submit">保存共享设置</button>
+      </form>
+      <form method="post" action="{{ appearance_prefix }}/assets/{{ asset.id }}/delete" data-confirm="确定删除这张背景图片吗？删除后使用它的昼夜背景会恢复为系统默认。">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <button class="button danger wide" type="submit">删除背景图片</button>
+      </form>
+    </article>
+  {% else %}
+    <div class="empty-state compact">还没有上传背景图片。可在上方分别上传白天和夜间图片。</div>
+  {% endfor %}
+  </div>
+</section>
+
+{% if current_user.is_admin %}
+<section class="panel appearance-panel">
+  <div class="section-heading"><div><h2>后台背景素材库</h2><p>这里集中保留全部账户上传的图片。管理员可查看并调整共享开关；图片本身不进入 Windows 同步数据。</p></div><span class="pill active">{{ central_assets|length }} 张</span></div>
+  <div class="theme-asset-grid central-assets">
+  {% for asset in central_assets %}
+    <article class="theme-asset-card">
+      <img src="/theme/assets/{{ asset.id }}" alt="后台背景图片 #{{ asset.id }}" loading="lazy">
+      <div><strong>图片 #{{ asset.id }}</strong><small>上传账号 ID {{ asset.owner_user_id or '已删除' }} · {{ asset.width }} × {{ asset.height }} · {{ '可共享' if asset.is_shared else '私有' }}</small></div>
+      <form method="post" action="{{ appearance_prefix }}/assets/{{ asset.id }}/sharing" class="theme-share-form">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <label class="switch-row"><span><strong>允许其他用户使用</strong><small>管理员可统一关闭不合适或不再允许共享的素材。</small></span><input type="checkbox" name="is_shared" value="on" {% if asset.is_shared %}checked{% endif %}></label>
+        <button class="button secondary wide" type="submit">更新后台共享开关</button>
+      </form>
+      <form method="post" action="{{ appearance_prefix }}/assets/{{ asset.id }}/delete" data-confirm="确定从后台删除这张背景图片吗？所有账号对它的选择都会被清空。">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <button class="button danger wide" type="submit">后台删除图片</button>
+      </form>
+    </article>
+  {% else %}
+    <div class="empty-state compact">暂无已上传的背景素材。</div>
+  {% endfor %}
+  </div>
+</section>
+{% endif %}
+{% endblock %}

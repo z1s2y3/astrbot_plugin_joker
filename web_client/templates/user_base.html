@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark light">
+  <title>{% block title %}{{ portal_name }}{% endblock %}</title>
+  <link rel="stylesheet" href="/static/app.css?v={{ static_asset_version }}">
+  <script defer src="/static/app.js?v={{ static_asset_version }}"></script>
+</head>
+<body data-theme-mode="{{ theme.mode }}" data-theme-day="{{ theme.day_url }}" data-theme-night="{{ theme.night_url }}">
+  <div class="theme-background" aria-hidden="true"></div>
+  <header class="topbar">
+    <a class="brand" href="/user"><span>J</span>{{ portal_name }} · 客户中心</a>
+    {% if current_user %}
+    <nav class="session-actions" aria-label="账户操作">
+      <span class="account">{{ current_user.username }}</span>
+      <form method="post" action="/user/logout" class="inline-form">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <button class="button ghost small" type="submit">退出</button>
+      </form>
+    </nav>
+    {% endif %}
+  </header>
+  {% if current_user %}
+  <div class="app-layout">
+    <aside class="sidebar" aria-label="客户导航">
+      <nav class="sidebar-nav" aria-label="主要导航">
+        <a class="sidebar-link{% if request.url.path in ['/user', '/user/dashboard'] %} active{% endif %}" href="/user" data-dashboard-nav="groups">我的群组</a>
+      </nav>
+      <section class="sidebar-section dashboard-anchor-nav" aria-label="控制台快捷入口">
+        <div class="sidebar-label">控制台</div>
+        <nav class="sidebar-nav" aria-label="控制台快捷入口">
+        <a class="sidebar-link" href="/user#sync-summary" data-dashboard-nav="sync" data-dashboard-anchor="sync-summary">同步状态</a>
+        <a class="sidebar-link" href="/user#license-claim" data-dashboard-nav="license" data-dashboard-anchor="license-claim">登记卡密</a>
+        <a class="sidebar-link" href="/user#account-security" data-dashboard-nav="security" data-dashboard-anchor="account-security">账号安全</a>
+        </nav>
+      </section>
+      <section class="sidebar-section dashboard-account-nav" aria-label="账号与连接">
+        <div class="sidebar-label">账号与连接</div>
+        <nav class="sidebar-nav" aria-label="账号与连接">
+        <a class="sidebar-link{% if request.url.path == '/user/appearance' %} active{% endif %}" href="/user/appearance">外观</a>
+        <a class="sidebar-link{% if request.url.path == '/user/feedback' %} active{% endif %}" href="/user/feedback">用户反馈</a>
+        </nav>
+      </section>
+      {% block sidebar_extra %}{% endblock %}
+    </aside>
+  {% endif %}
+  <main class="page {% block page_class %}{% endblock %}">
+    {% for flash in flashes %}<div class="flash {{ flash.category }}">{{ flash.message }}</div>{% endfor %}
+    {% block content %}{% endblock %}
+  </main>
+  {% if current_user %}</div>{% endif %}
+  <footer>Joker 客户中心 · {{ current_year }}</footer>
+</body>
+</html>

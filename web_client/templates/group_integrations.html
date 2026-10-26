@@ -1,0 +1,245 @@
+{% extends "admin_base.html" if current_user.is_admin else "user_base.html" %}
+{% block title %}{{ integration_title }} - {{ portal_name }}{% endblock %}
+{% block sidebar_extra %}
+{% set group_page_prefix = '/admin/groups/' ~ integration_group_id if current_user.is_admin else '/user/groups/' ~ integration_group_id %}
+<section class="sidebar-section group-sidebar-nav" aria-label="群配置导航">
+  <div class="sidebar-label">群 {{ integration_group_id }}</div>
+  <nav class="group-nav-quick" aria-label="群管常用入口">
+    <a href="{{ group_page_prefix }}#group-overview">概览</a>
+    <a href="{{ group_page_prefix }}#feature-audit">审核</a>
+    <a href="{{ group_page_prefix }}#member-management">成员管理</a>
+    <a href="{{ group_page_prefix }}#stats-data">签到数据</a>
+    <a class="active" href="#server-list">服务器</a>
+  </nav>
+  <nav class="sidebar-nav group-nav-compact" aria-label="群功能导航">
+    <a class="sidebar-link" href="{{ group_page_prefix }}#group-overview">群概览</a>
+    <details class="group-nav-category" open>
+      <summary>群管</summary>
+      <div class="group-nav-subtree-items">
+        <a class="sidebar-link" href="{{ group_page_prefix }}#feature-audit">入群审核</a>
+        <a class="sidebar-link" href="{{ group_page_prefix }}#feature-welcome">入群欢迎</a>
+        <a class="sidebar-link" href="{{ group_page_prefix }}#feature-blacklist">黑名单</a>
+        <a class="sidebar-link" href="{{ group_page_prefix }}#feature-mute">禁言</a>
+        <a class="sidebar-link" href="{{ group_page_prefix }}#feature-kick">踢出</a>
+        <a class="sidebar-link" href="{{ group_page_prefix }}#feature-recall">撤回</a>
+        <a class="sidebar-link" href="{{ group_page_prefix }}#member-management">成员操作</a>
+      </div>
+    </details>
+    <details class="group-nav-category" open>
+      <summary>游戏与服务器</summary>
+      <div class="group-nav-subtree-items">
+        <a class="sidebar-link" href="{{ group_page_prefix }}#feature-scum">SCUM 查询</a>
+        <a class="sidebar-link" href="{{ group_page_prefix }}#feature-game_commands">游戏指令</a>
+        <a class="sidebar-link active" href="#server-list">服务器与数据库</a>
+      </div>
+    </details>
+    <details class="group-nav-category">
+      <summary>查询与数据</summary>
+      <div class="group-nav-subtree-items">
+        <a class="sidebar-link" href="{{ group_page_prefix }}#feature-stats">签到与统计设置</a>
+        <a class="sidebar-link" href="{{ group_page_prefix }}#stats-data">签到数据</a>
+        <a class="sidebar-link" href="{{ group_page_prefix }}#runtime-data">运行状态</a>
+      </div>
+    </details>
+    <details class="group-nav-category">
+      <summary>娱乐</summary>
+      <div class="group-nav-subtree-items">
+        <a class="sidebar-link" href="{{ group_page_prefix }}#feature-entertainment">娱乐设置</a>
+        <a class="sidebar-link" href="{{ group_page_prefix }}#entertainment-dice">骰子</a>
+        <a class="sidebar-link" href="{{ group_page_prefix }}#entertainment-rps">猜拳</a>
+        <a class="sidebar-link" href="{{ group_page_prefix }}#entertainment-random">随机选择</a>
+        <a class="sidebar-link" href="{{ group_page_prefix }}#entertainment-music">点歌</a>
+        <a class="sidebar-link" href="{{ group_page_prefix }}#entertainment-like">点赞</a>
+      </div>
+    </details>
+    <details class="group-nav-category">
+      <summary>高级与系统</summary>
+      <div class="group-nav-subtree-items">
+        <a class="sidebar-link" href="{{ group_page_prefix }}#feature-reply">自动回复</a>
+        <a class="sidebar-link" href="{{ group_page_prefix }}#feature-timed_message">定时任务</a>
+        <a class="sidebar-link" href="{{ group_page_prefix }}#feature-group_config">群设置</a>
+      </div>
+    </details>
+  </nav>
+</section>
+{% endblock %}
+{% block content %}
+{% set profile_items = integration_profiles|default([], true) %}
+{% set current_profile_id = integration_profile_id|default('default', true) %}
+{% set current_profile = namespace(item=None) %}
+{% for profile in profile_items %}
+  {% if profile.profile_id == current_profile_id %}{% set current_profile.item = profile %}{% endif %}
+{% endfor %}
+{% set current_name = current_profile.item.name if current_profile.item else '' %}
+{% set current_profile_enabled = current_profile.item.profile_enabled if current_profile.item else true %}
+{% set current_profile_active = current_profile.item.active if current_profile.item else false %}
+{% set current_snapshot_revision = current_profile.item.snapshot_revision if current_profile.item else 0 %}
+{% set current_snapshot_sha256 = current_profile.item.snapshot_sha256 if current_profile.item else '' %}
+{% set current_windows_path = current_profile.item.windows_database_path if current_profile.item else '保存后生成' %}
+{% set current_game = game_server_profile|default({}, true) %}
+{% set current_ftp = integration_config.ftp %}
+{% set current_database = integration_config.database %}
+{% set current_database_profile_id = integration_config.database_profile_id|default(current_profile_id, true) %}
+{% set database_candidates = namespace(items=[]) %}
+{% for candidate in profile_items %}
+  {% if candidate.database.sqlite_path %}{% set database_candidates.items = database_candidates.items + [candidate] %}{% endif %}
+{% endfor %}
+{% set has_ftp_binding = integration_config.ftp_connection_id and current_ftp.enabled %}
+<div class="integration-workspace">
+<a class="back-link" href="{{ integration_back_url }}">← {{ integration_back_label }}</a>
+
+<section class="hero compact">
+  <div>
+    <div class="eyebrow">GROUP GAME SERVERS</div>
+    <h1>{{ integration_title }}</h1>
+    <p class="muted">每台服务器只需维护一份数据源：服务器名称、数据库名称、FTP 凭据和数据库文件一起保存。SCUM 在线查询 ID 只在群内绑定，不需要在网页手填。</p>
+  </div>
+  <span class="pill active">群 {{ integration_group_id }}</span>
+</section>
+
+<div class="license-warning neutral">
+  <strong>{{ integration_scope_label }}</strong>
+  <span>FTP 密码仅加密保存在 Linux 网页配置中心；Windows 只接收该服务器对应的数据库快照和游戏连接信息。</span>
+</div>
+
+<nav class="integration-local-nav" aria-label="服务器配置导航">
+  <a href="#server-list">服务器列表</a>
+  <a href="#server-editor">编辑服务器</a>
+  <a href="#database-sync">数据源状态</a>
+  <a href="#connection-test">连接检测</a>
+</nav>
+
+<section class="panel integration-profile-panel" id="server-list">
+  <div class="section-heading">
+    <div><h2>游戏服务器</h2><p>在这里选择、编辑或删除一台服务器。无需单独创建 FTP 连接。</p></div>
+    <span class="pill active">{{ profile_items|length }} / 32</span>
+  </div>
+  <div class="form-actions"><a class="button primary" href="{{ integration_prefix }}/integrations?new=1">添加游戏服务器</a></div>
+  <div class="item-list" aria-label="已配置游戏服务器">
+    {% for profile in profile_items %}
+    {% set profile_game = profile.get('game', {}) %}
+    <article class="list-item integration-profile-item">
+      <div class="integration-profile-summary">
+        <strong>{{ profile.name or profile.profile_id }}</strong>
+        <p class="integration-profile-status">FTP：{{ profile.ftp_connection_name or '未配置' }} · 数据库：{{ profile.database.display_name or profile.database.database or profile.database.sqlite_path or '未选择' }}{% if profile.database_profile_id and profile.database_profile_id != profile.profile_id %} · 复用服务器：{{ profile.database_profile_id }}{% endif %} · 游戏连接：{% if profile_game %}{{ '已启用' if profile_game.get('enabled', true) else '已停用' }}{% else %}未配置{% endif %}</p>
+      </div>
+      <div class="row-actions">
+        {% if profile.active %}<span class="pill active">当前使用</span>{% endif %}
+        <a class="button ghost small" href="{{ integration_prefix }}/integrations?profile_id={{ profile.profile_id }}">编辑</a>
+        <form method="post" action="{{ integration_prefix }}/integrations/server/status" class="inline-form">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}"><input type="hidden" name="profile_id" value="{{ profile.profile_id }}"><input type="hidden" name="enabled" value="{{ 'off' if profile.profile_enabled else 'on' }}"><button class="button secondary small" type="submit">{{ '暂停' if profile.profile_enabled else '启用' }}</button>
+        </form>
+        <form method="post" action="{{ integration_prefix }}/integrations/server/delete" class="inline-form" onsubmit="return confirm('确定删除游戏服务器 {{ profile.name or profile.profile_id }}？该服务器的数据库快照和未被其他服务器使用的 FTP 连接也会删除。');">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}"><input type="hidden" name="profile_id" value="{{ profile.profile_id }}"><button class="button danger small" type="submit">删除</button>
+        </form>
+      </div>
+    </article>
+    {% else %}<div class="empty-state compact">当前群还没有游戏服务器。添加时可直接填写 FTP 和数据库文件路径，一次保存即可完成绑定。</div>{% endfor %}
+  </div>
+</section>
+
+<section class="panel" id="server-editor">
+  <div class="section-heading">
+  <div><h2>{{ '添加游戏服务器' if integration_creating_profile else '编辑游戏服务器' }}</h2><p>服务器、数据库和 FTP 是同一套数据源。填写名称、FTP 和数据库文件后一次保存；系统配置编号自动管理。</p></div>
+    <span class="pill {{ 'active' if current_profile_active else '' }}">{{ '当前使用' if current_profile_active else '独立配置' }}</span>
+  </div>
+  <form method="post" action="{{ integration_prefix }}/integrations/server" class="form-stack" data-group-draft-form>
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}"><input type="hidden" name="original_profile_id" value="{{ current_profile_id if not integration_creating_profile else '' }}"><input type="hidden" name="ftp_connection_id" value="{{ unified_ftp_connection_id }}"><input type="hidden" name="game_profile_id" value="{{ current_game.get('id', current_profile_id) }}">
+    <input type="hidden" name="profile_id" value="{{ current_profile_id }}">
+    <div class="form-grid two">
+      <label>服务器名称<input name="profile_name" value="{{ current_name or current_profile_id }}" maxlength="80" placeholder="例如：北极熊主服" required><small>这是网页中显示的名称；系统会自动维护内部配置编号。</small></label>
+      <label>数据库名称<input name="database_display_name" value="{{ current_database.display_name or current_database.database or '' }}" maxlength="80" placeholder="例如：北极熊主服数据库" {% if current_database_profile_id != current_profile_id %}readonly{% else %}required{% endif %}><small>{% if current_database_profile_id != current_profile_id %}当前复用来源服务器的数据库名称。{% else %}仅用于网页显示，不会改变服务器上的真实数据库文件名。{% endif %}</small></label>
+    </div>
+    <div class="license-warning neutral"><strong>SCUM 在线查询 ID 不在这里填写</strong><span>先用群内服务器查询功能找到对应服务器，再使用 <code>/绑定id 查询结果中的数字 ID</code> 完成绑定。绑定完成后，成员使用“查询在线”即可查看在线状态。</span></div>
+    <label>使用哪台服务器的数据库
+      <select name="database_profile_id">
+        <option value="{{ current_profile_id }}" {% if current_database_profile_id == current_profile_id %}selected{% endif %}>本服务器数据库（默认）</option>
+        {% for candidate in database_candidates.items %}
+        {% if candidate.profile_id != current_profile_id %}<option value="{{ candidate.profile_id }}" {% if current_database_profile_id == candidate.profile_id %}selected{% endif %}>复用：{{ candidate.name or candidate.profile_id }}</option>{% endif %}
+        {% endfor %}
+      </select>
+      <small>保持默认即可使用本服务器的 FTP 和 SQLite 文件；选择“复用”只会引用另一台服务器的数据库，不会修改那台服务器的数据。</small>
+    </label>
+    <div class="form-grid two">
+      <label class="switch-row compact-switch"><span><strong>启用此服务器</strong><small>停用后不会被签到、SteamID 验证和数据库相关功能使用。</small></span><input type="hidden" name="profile_enabled" value="off"><input type="checkbox" name="profile_enabled" value="on" {% if current_profile_enabled %}checked{% endif %}></label>
+      <label class="switch-row compact-switch"><span><strong>设为当前使用</strong><small>本群默认签到和游戏指令使用这一台服务器。</small></span><input type="hidden" name="activate_profile" value="off"><input type="checkbox" name="activate_profile" value="on" {% if current_profile_active %}checked{% endif %}></label>
+    </div>
+
+    <div class="section-heading compact-heading"><div><h3>服务器数据库（FTP）</h3><p>填写 FTP 后可直接从服务器读取数据库文件列表；选择数据库并检测后，Windows 会生成独立快照。选择复用其他服务器时，下方路径不会改动来源服务器。</p></div></div>
+    <label class="switch-row"><span><strong>启用 FTP</strong><small>开启后可浏览、下载和验证此服务器的 SQLite 数据库。</small></span><input type="hidden" name="ftp_enabled" value="off"><input type="checkbox" name="ftp_enabled" value="on" {% if current_ftp.enabled %}checked{% endif %}></label>
+    <div class="form-grid two">
+      <label>FTP 服务器 IP / 域名<input name="ftp_host" value="{{ current_ftp.host }}" maxlength="253" placeholder="ftp.example.com"></label>
+      <label>FTP 端口<input type="number" name="ftp_port" value="{{ current_ftp.port }}" min="1" max="65535" required></label>
+    </div>
+    <div class="form-grid two">
+      <label>FTP 账号<input name="ftp_username" value="{{ current_ftp.username }}" autocomplete="username" maxlength="320"></label>
+      <label>FTP 密码<input type="password" name="ftp_password" autocomplete="new-password" maxlength="512" placeholder="{{ '已保存，留空则保留' if current_ftp.password_configured else '启用 FTP 时必填' }}"></label>
+    </div>
+    <label>FTP 根目录<input name="ftp_remote_path" value="{{ current_ftp.remote_path or '/' }}" maxlength="512" placeholder="/"><small>数据库文件在同级目录时可开启下方的访问上一级目录。</small></label>
+    <label>远程 SQLite 数据库文件<input name="database_path" value="{{ current_database.sqlite_path if current_database_profile_id == current_profile_id else '' }}" maxlength="1024" placeholder="/BjxRobot/beijixiong.db"><small>{% if current_database_profile_id != current_profile_id %}当前正在复用 {{ current_database_profile_id }} 的数据库；此处留空，保存不会修改来源服务器。{% else %}可直接填写已知路径，或先保存 FTP 后点击下方“连接 FTP 并获取服务器数据库”读取文件列表后选择。{% endif %}</small></label>
+    <div class="form-grid three">
+      <label class="switch-row compact-switch"><span><strong>FTPS 加密</strong></span><input type="hidden" name="ftp_tls" value="off"><input type="checkbox" name="ftp_tls" value="on" {% if current_ftp.tls %}checked{% endif %}></label>
+      <label class="switch-row compact-switch"><span><strong>被动模式</strong></span><input type="hidden" name="ftp_passive" value="off"><input type="checkbox" name="ftp_passive" value="on" {% if current_ftp.passive %}checked{% endif %}></label>
+      <label class="switch-row compact-switch"><span><strong>允许访问上一级目录</strong></span><input type="hidden" name="ftp_allow_parent" value="off"><input type="checkbox" name="ftp_allow_parent" value="on" {% if current_ftp.allow_parent_directory %}checked{% endif %}></label>
+    </div>
+
+    <div class="section-heading compact-heading"><div><h3>游戏 WebSocket</h3><p>Windows 在实际执行游戏指令前连接此服务器；未确认执行成功不会发送成功回复。</p></div></div>
+    {% if current_user.is_admin %}
+    <div class="form-grid two">
+      <label class="switch-row compact-switch"><span><strong>启用游戏连接</strong><small>只启用数据库时可关闭；首次启用必须填写后台配置的完整链接。</small></span><input type="hidden" name="game_enabled" value="off"><input type="checkbox" name="game_enabled" value="on" {% if current_game.get('enabled', false) %}checked{% endif %}></label>
+      <label>连接超时<input name="timeout_seconds" type="number" value="{{ current_game.get('timeout_seconds', 10) }}" min="1" max="30" required></label>
+    </div>
+    <label>插件 WebSocket 链接<input name="websocket_url" type="password" value="" maxlength="2048" placeholder="{{ '已保存，留空则保留' if current_game.get('api_key_configured') else 'ws://127.0.0.1:28016/ws?apiKey=...' }}" autocomplete="new-password"><small>仅后台管理员填写开发文档中的完整链接，API Key 加密保存，网页不会再次显示。</small></label>
+    {% else %}
+    <div class="license-warning neutral">
+      <strong>游戏连接由后台维护</strong>
+      <span>这里不需要填写 WebSocket 地址、ws 或 apiKey。普通用户只需在群配置中验证对应游戏卡密，后台已保存的连接由 Windows 自动使用。</span>
+      <a class="button secondary small" href="{{ integration_back_url }}#integration-status">去验证游戏卡密</a>
+    </div>
+    {% endif %}
+    <div class="form-actions"><button class="button primary" type="submit">保存服务器数据源</button><button class="button secondary" type="submit" name="test_after_save" value="database">保存并检测数据库</button></div>
+  </form>
+</section>
+
+<section class="panel database-sync-panel" id="database-sync">
+  {% if has_ftp_binding %}
+  <div class="section-heading"><div><h2>当前服务器数据库</h2><p>这里仅显示当前服务器正在使用的数据库。需要更换文件时先连接 FTP 获取服务器数据库列表；Windows 使用独立只读快照，不会覆盖远程服务器正在使用的数据库。</p></div><span class="pill {{ 'active' if current_snapshot_revision else 'expired' }}">{{ ('快照版本 ' ~ current_snapshot_revision) if current_snapshot_revision else '未生成快照' }}</span></div>
+  <div class="integration-status-grid"><div class="integration-status-item"><strong>当前服务器</strong><span>{{ current_name or current_profile_id }}</span></div><div class="integration-status-item"><strong>已保存 FTP</strong><span>{{ current_ftp.host }}</span><small>{{ current_ftp.remote_path or '/' }}</small></div><div class="integration-status-item"><strong>Windows 快照</strong><span class="wrap-anywhere">{{ current_windows_path }}</span><small>{% if current_snapshot_sha256 %}SHA-256 {{ current_snapshot_sha256[:12] }}...{% else %}保存并检测数据库后生成{% endif %}</small></div></div>
+  <div class="list-item"><div><strong>{{ current_database.display_name or current_database.database or '已选数据库文件' }}</strong><p class="wrap-anywhere">{{ current_database.sqlite_path or '尚未选择' }}</p><small>{% if current_database_profile_id != current_profile_id %}复用服务器：{{ current_database_profile_id }}（不会修改来源服务器）{% else %}本服务器独立数据库{% endif %}。SteamID 入群验证只读查询此数据库；签到会由 Linux 读取最新文件、完成校验后写回同一数据库。</small></div><span class="pill">{{ current_database.selection_source or '未选择' }}</span></div>
+  <div class="form-actions">
+    <form method="post" action="{{ integration_prefix }}/integrations/browse" class="inline-form"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><input type="hidden" name="profile_id" value="{{ current_profile_id }}"><input type="hidden" name="ftp_path" value="{{ ftp_browser.path if ftp_browser else current_ftp.remote_path }}"><button class="button secondary" type="submit">连接 FTP 并获取服务器数据库</button></form>
+  </div>
+  {% else %}
+  <div class="section-heading"><div><h2>等待保存服务器数据源</h2><p>当前服务器尚未保存 FTP，无法浏览或检测数据库。</p></div><span class="pill expired">等待保存 FTP</span></div>
+  <div class="license-warning neutral"><strong>只需填写上方一张表单</strong><span>请在“服务器数据源（FTP 与数据库）”中填写名称、FTP 和数据库文件路径，然后点击“保存并检测数据库”。成功后这里会显示浏览、数据库文件和 Windows 快照状态。</span></div>
+  {% endif %}
+</section>
+
+{% if ftp_browser_requested %}
+  <section class="panel audit-panel"><div class="section-heading"><div><h2>服务器数据库文件</h2><p class="wrap-anywhere">已从 {{ current_ftp.host or '未配置 FTP' }} 读取目录：{{ ftp_browser.path if ftp_browser else (ftp_browser_path or current_ftp.remote_path) }}。选择后立即绑定到当前服务器；需要时可使用下方“检测数据库”复核文件。</p></div>{% if ftp_browser and ftp_browser.truncated %}<span class="pill">已限制显示数量</span>{% endif %}</div>{% if ftp_browser %}<div class="item-list">{% for entry in ftp_browser.entries %}<div class="list-item"><div><strong>{{ '目录 ' if entry.kind == 'dir' else '文件 ' }}{{ entry.name }}</strong><p class="wrap-anywhere">{{ entry.path }}{% if entry.size is not none %} · {{ entry.size }} bytes{% endif %}</p></div><div class="row-actions">{% if entry.kind == 'dir' %}<form method="post" action="{{ integration_prefix }}/integrations/browse" class="inline-form"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><input type="hidden" name="profile_id" value="{{ current_profile_id }}"><input type="hidden" name="ftp_path" value="{{ entry.path }}"><button class="button ghost small" type="submit">打开目录</button></form>{% elif entry.name.lower().endswith(('.db', '.sqlite', '.sqlite3', '.s3db')) %}<form method="post" action="{{ integration_prefix }}/integrations/select-database" class="inline-form"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><input type="hidden" name="profile_id" value="{{ current_profile_id }}"><input type="hidden" name="database_path" value="{{ entry.path }}"><input type="hidden" name="ftp_path" value="{{ ftp_browser.path }}"><button class="button secondary small" type="submit">选择此数据库</button></form>{% endif %}</div></div>{% else %}<div class="empty-state compact">此目录没有可显示的文件。</div>{% endfor %}</div>{% else %}<div class="empty-state compact">FTP 目录暂时无法读取，请检查并先保存本服务器的 FTP 配置。</div>{% endif %}</section>
+{% endif %}
+
+<section class="panel audit-panel" id="ftp-cleanup">
+  <div class="section-heading"><div><h2>FTP 数据源清理</h2><p>这里只显示当前群的独立 FTP。未被使用的连接可直接删除；被服务器引用时，可明确解除该服务器的数据库绑定后再删除。</p></div></div>
+  <div class="item-list">
+    {% for connection in ftp_connections|default([], true) %}
+    <article class="list-item">
+      <div>
+        <strong>{{ connection.name or connection.ftp_connection_id }}</strong>
+        <p class="wrap-anywhere"><code>{{ connection.ftp_connection_id }}</code> · {{ connection.ftp.host or '未配置服务器' }}</p>
+        <small>{% if connection.bound_count %}正在被服务器引用：{{ connection.bound_profile_ids|join('、') }}{% else %}未被服务器引用{% endif %}</small>
+      </div>
+      <div class="row-actions">
+        <form method="post" action="{{ integration_prefix }}/integrations/ftp-connections/delete" class="inline-form" onsubmit="return confirm('{% if connection.bound_count %}删除后将解除 {{ connection.bound_profile_ids|join('、') }} 的数据库绑定，确定继续？{% else %}确定删除此 FTP 数据源？{% endif %}');">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}"><input type="hidden" name="ftp_connection_id" value="{{ connection.ftp_connection_id }}"><input type="hidden" name="profile_id" value="{{ current_profile_id }}">
+          {% if connection.bound_count %}<input type="hidden" name="detach_bound_profiles" value="on"><button class="button danger small" type="submit">解除引用并删除</button>{% else %}<button class="button danger small" type="submit">删除</button>{% endif %}
+        </form>
+      </div>
+    </article>
+    {% else %}<div class="empty-state compact">当前群没有独立 FTP 数据源。</div>{% endfor %}
+  </div>
+</section>
+
+<section class="panel audit-panel" id="connection-test"><div class="section-heading"><div><h2>连接检测</h2><p>检测只针对当前游戏服务器；游戏 WebSocket 仅作为高级选项保留，不影响服务器与数据库绑定。</p></div></div><div class="form-actions"><form method="post" action="{{ integration_prefix }}/integrations/test" class="inline-form"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><input type="hidden" name="profile_id" value="{{ current_profile_id }}"><input type="hidden" name="target" value="ftp"><button class="button secondary" type="submit" {% if not has_ftp_binding %}disabled{% endif %}>检测 FTP</button></form><form method="post" action="{{ integration_prefix }}/integrations/test" class="inline-form"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><input type="hidden" name="profile_id" value="{{ current_profile_id }}"><input type="hidden" name="target" value="database"><button class="button secondary" type="submit" {% if not has_ftp_binding or not current_database.enabled %}disabled{% endif %}>检测数据库</button></form><form method="post" action="{{ integration_prefix }}/game-server-test" class="inline-form"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><input type="hidden" name="profile_id" value="{{ current_game.get('id', current_profile_id) }}"><input type="hidden" name="return_to" value="integrations"><button class="button secondary" type="submit" {% if not current_game.get('enabled', false) %}disabled{% endif %}>检测游戏 WebSocket</button></form></div></section>
+ </div>
+{% endblock %}

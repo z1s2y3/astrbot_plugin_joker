@@ -1,0 +1,32 @@
+{% extends "admin_base.html" %}
+{% block title %}执行端迁移 · {{ portal_name }}{% endblock %}
+{% block content %}
+<a class="back-link" href="/admin">← 返回管理后台</a>
+<section class="hero compact">
+  <div><div class="eyebrow">RUNNER MIGRATION</div><h1>执行端迁移预留</h1><p class="muted">Windows 为唯一执行端；Linux 仅运行网页和同步。</p></div>
+  <span class="pill active">当前执行：Windows</span>
+</section>
+
+<div class="license-warning neutral"><strong>不会自动迁移</strong><span>此开关只记录迁移状态，不启动 Linux 机器人，也不停止 Windows。</span></div>
+
+<div class="dashboard-columns">
+  <section class="panel">
+    <div class="section-heading"><div><h2>Linux 执行端</h2><p>当前未部署，暂不能迁移。</p></div></div>
+    <form method="post" action="/admin/deployment" class="form-stack">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <label class="switch-row"><span><strong>预留 Linux 迁移接口</strong><small>声明接口已准备迁移；Windows 同步不受影响。</small></span><input type="checkbox" name="linux_migration_prepared" value="on" {% if runner.linux_migration_prepared %}checked{% endif %}></label>
+      <button class="button primary" type="submit">保存迁移预留状态</button>
+    </form>
+  </section>
+  <section class="panel">
+    <div class="section-heading"><div><h2>接口状态</h2><p>当前执行端和迁移状态。</p></div></div>
+    <div class="item-list">
+      <div class="list-item"><div><strong>当前执行端</strong><p>Windows（固定，当前版本不可由网页切换）</p></div><span class="pill active">{{ runner.active_runner }}</span></div>
+      <div class="list-item"><div><strong>Linux 迁移预留</strong><p>仅记录计划；不运行任何机器人进程。</p></div><span class="pill {{ 'active' if runner.linux_migration_prepared else 'expired' }}">{{ '✅️ 已开启' if runner.linux_migration_prepared else '❌️ 未开启' }}</span></div>
+      <div class="list-item"><div><strong>Linux 运行器</strong><p>尚未部署，因此无法启用执行。</p></div><span class="pill expired">未安装</span></div>
+    </div>
+  </section>
+</div>
+
+<section class="panel audit-panel"><div class="section-heading"><div><h2>迁移步骤</h2><p>完成部署和确认后再切换执行端。</p></div></div><ol class="compact-steps"><li>备份 Windows 的 AstrBot、NapCat 与 plugin_data。</li><li>部署 Linux 执行端并完成 QQ/NapCat 登录。</li><li>校验同步令牌和迁移接口，确认接管。</li><li>确认 Linux 正常处理群消息后，停止 Windows 执行端。</li></ol></section>
+{% endblock %}
