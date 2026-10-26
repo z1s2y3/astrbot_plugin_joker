@@ -36,6 +36,52 @@ class _QuietWindowsLogger:
 logger = _QuietWindowsLogger(logger)
 
 
+def _schema_default_value(node):
+    if not isinstance(node, dict):
+        return None
+    if "default" in node:
+        return node["default"]
+
+    node_type = node.get("type")
+    if node_type == "object":
+        items = node.get("items")
+        if not isinstance(items, dict):
+            return {}
+        defaults = {}
+        for key, item in items.items():
+            value = _schema_default_value(item)
+            if value is not None:
+                defaults[key] = value
+        return defaults
+    if node_type == "list":
+        return []
+    if node_type == "bool":
+        return False
+    if node_type in {"int", "float"}:
+        return 0
+    if node_type in {"string", "text"}:
+        return ""
+    return None
+
+
+def _load_schema_default_config() -> dict:
+    schema_path = Path(__file__).with_name("_conf_schema.json")
+    try:
+        with schema_path.open("r", encoding="utf-8") as schema_file:
+            schema = json.load(schema_file)
+        if not isinstance(schema, dict):
+            return {}
+        defaults = {}
+        for key, node in schema.items():
+            value = _schema_default_value(node)
+            if value is not None:
+                defaults[key] = value
+        return defaults
+    except Exception as exc:
+        logger.warning(f"读取默认配置模板失败: {exc}")
+        return {}
+
+
 def _install_aiocqhttp_resultstore_guard() -> None:
     """Ignore late reverse-WebSocket replies after an API wait timed out.
 
@@ -2848,27 +2894,45 @@ class MyPlugin(Star):
 
     def __init__(self, context: Context, config: dict = None):
         super().__init__(context)
-        
-        # 尝试从插件配置文件读取配置
+
+        config_path = None
+        should_persist_default = False
         try:
             from astrbot.core.utils.astrbot_path import get_astrbot_data_path
             config_path = os.path.join(get_astrbot_data_path(), "config", "astrbot_plugin_joker_config.json")
             if os.path.exists(config_path):
                 with open(config_path, "r", encoding="utf-8-sig") as f:
-                    self.config = json.load(f)
-                    # 设置全局配置更新时间戳
-                    if "_updated_at"not in self.config:
+                    loaded_config = json.load(f)
+                if isinstance(loaded_config, dict) and loaded_config:
+                    self.config = loaded_config
+                    if "_updated_at" not in self.config:
                         self.config["_updated_at"] = int(os.path.getmtime(config_path))
-                    logger.debug(f"成功从配置文件加载插件配置")
+                    logger.debug("成功从配置文件加载插件配置")
+                else:
+                    self.config = config if isinstance(config, dict) and config else _load_schema_default_config()
+                    should_persist_default = True
+                    logger.warning("插件配置文件为空，已加载默认配置")
             else:
-                logger.warning(f"插件配置文件不存在: {config_path}，使用默认配置")
-                self.config = config or {}
-                self.config["_updated_at"] = int(time.time())
+                self.config = config if isinstance(config, dict) and config else _load_schema_default_config()
+                should_persist_default = True
+                logger.warning(f"插件配置文件不存在: {config_path}，已创建默认配置")
+        except json.JSONDecodeError as exc:
+            logger.error(f"加载插件配置失败，JSON 格式错误: {exc}，使用内置默认配置")
+            self.config = config if isinstance(config, dict) and config else _load_schema_default_config()
         except Exception as e:
-            logger.error(f"加载插件配置失败: {e}，使用默认配置")
-            self.config = config or {}
+            logger.error(f"加载插件配置失败: {e}，使用内置默认配置")
+            self.config = config if isinstance(config, dict) and config else _load_schema_default_config()
+
+        if not isinstance(self.config, dict):
+            self.config = _load_schema_default_config()
+        if "_updated_at" not in self.config:
             self.config["_updated_at"] = int(time.time())
-        
+        if should_persist_default and config_path:
+            try:
+                self._write_json_atomic(config_path, self.config)
+            except Exception as exc:
+                logger.warning(f"保存默认插件配置失败: {exc}")
+
         # Helper function to get nested config value
         def get_nested(key1, key2=None, key3=None, default=None):
             """

@@ -13,6 +13,13 @@
 部署和代码边界请先查看 [PROJECT_STRUCTURE.md](PROJECT_STRUCTURE.md)。其中说明了
 Windows 执行端、Linux 网页端、同步数据流和发布包禁止包含的敏感文件。
 
+### 首次部署默认配置
+
+从 Git 仓库复制插件到新的 AstrBot/NapCat 服务器后，直接启动 AstrBot 即可。插件发现
+`data/config/astrbot_plugin_joker_config.json` 不存在或为空时，会根据 `_conf_schema.json`
+自动生成一份默认配置并保存；已有配置不会被覆盖。群组配置、授权数据和运行记录仍会在
+实际使用时写入 `data/plugin_data/`，不会随 Git 仓库上传。
+
 ## ✨ 功能特性
 
 ### 🎮 SCUM服务器查询
