@@ -1,0 +1,15 @@
+{% extends "admin_base.html" if current_user.is_admin else "user_base.html" %}
+{% block title %}功能开关 · 群 {{ group_id }}{% endblock %}
+{% block content %}
+<section class="hero compact"><div><div class="eyebrow">FEATURES</div><h1>功能开关</h1><p class="muted">每项功能独立保存，不会覆盖其他功能设置。</p></div><div class="row-actions"><a class="button secondary" href="{{ group_prefix }}/{{ group_id }}/official-bot">返回官方机器人</a></div></section>
+{% if not official.available %}<section class="panel"><p class="muted">{{ official.error }}</p></section>{% else %}
+<section class="feature-grid">
+{% for item in official.features %}
+  {% set state = namespace(enabled=False) %}{% for saved in official.config.features if saved.key == item.key %}{% set state.enabled = saved.enabled %}{% endfor %}
+  <section class="panel feature-setting-card"><div class="section-heading"><div><h2>{{ item.label }}</h2><p>{{ item.note }}</p></div><span class="pill {{ 'active' if state.enabled else '' }}">{{ '开启' if state.enabled else '关闭' }}</span></div>
+    <form method="post" action="{{ group_prefix }}/{{ group_id }}/official-bot/config" class="management-form"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><input type="hidden" name="feature_key" value="{{ item.key }}"><label class="switch-row"><span>启用本群功能</span><input type="checkbox" name="enabled" value="on" {% if state.enabled %}checked{% endif %}></label><button class="button primary" type="submit">保存 {{ item.label }}</button></form>
+  </section>
+{% endfor %}
+</section>
+{% endif %}
+{% endblock %}

@@ -312,7 +312,7 @@ def _compact_reply_text(text: str) -> str:
     return compact
 
 
-@register("astrbot_plugin_joker", "Joker", "SCUM 查询与 QQ 群管插件", "1.11.404")
+@register("astrbot_plugin_joker", "Joker", "SCUM 查询与 QQ 群管插件", "1.11.406")
 class MyPlugin(Star):
     _MEMBER_REFRESH_WARNING_COOLDOWN_SECONDS = 300
     _GROUP_BOT_ACTIVITY_TTL_SECONDS = 120
@@ -3662,7 +3662,7 @@ class MyPlugin(Star):
         self._music_share_seen: dict[str, float] = {}
         self._music_share_seen_ttl = 30.0
         
-        logger.debug("Joker 插件初始化完成，版本 1.11.404")
+        logger.debug("Joker 插件初始化完成，版本 1.11.406")
 
     @staticmethod
     def _write_json_atomic(path: str, data: dict) -> None:
@@ -4630,6 +4630,7 @@ class MyPlugin(Star):
             show_connection_events=signature[4],
             runtime_settings_callback=self._apply_portal_runtime_settings,
             portal_action_callback=self._apply_portal_member_actions,
+            local_group_ids_callback=self._get_portal_sync_local_group_ids,
         )
         if not client.configured:
             self._cancel_portal_console_sync()
@@ -4644,6 +4645,68 @@ class MyPlugin(Star):
             "portal_sync", client.run_forever
         )
         self._portal_sync_signature = signature
+
+    async def _get_portal_sync_local_group_ids(self):
+        """List QQ groups visible to this Windows bot for config bootstrap."""
+        now = time.monotonic()
+        cached_at = float(getattr(self, "_portal_sync_group_ids_cached_at", 0) or 0)
+        cached_ids = getattr(self, "_portal_sync_group_ids_cache", set())
+        if now - cached_at < 60 and isinstance(cached_ids, set):
+            return sorted(cached_ids)
+
+        clients = []
+        try:
+            platform_manager = getattr(self.context, "platform_manager", None)
+            instances = getattr(platform_manager, "platform_insts", ())
+            if isinstance(instances, (list, tuple, set)):
+                for instance in instances:
+                    try:
+                        platform_client = instance.get_client()
+                    except Exception:
+                        continue
+                    if callable(getattr(platform_client, "call_action", None)):
+                        clients.append(platform_client)
+            platform = self.context.get_platform(filter.PlatformAdapterType.AIOCQHTTP)
+            default_client = platform.get_client() if platform else None
+            if callable(getattr(default_client, "call_action", None)):
+                clients.append(default_client)
+        except Exception:
+            logger.debug("获取本机 QQ 平台客户端失败", exc_info=True)
+
+        group_ids = set()
+        seen_clients = set()
+        received_group_list = False
+        for client in clients:
+            marker = id(client)
+            if marker in seen_clients:
+                continue
+            seen_clients.add(marker)
+            try:
+                response = await asyncio.wait_for(
+                    client.call_action(action="get_group_list", no_cache=True),
+                    timeout=4.0,
+                )
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                continue
+            data = response.get("data", response) if isinstance(response, dict) else response
+            if not isinstance(data, list):
+                continue
+            received_group_list = True
+            for item in data:
+                if not isinstance(item, dict):
+                    continue
+                group_id = self._normalize_positive_id(
+                    item.get("group_id", item.get("groupId", ""))
+                )
+                if group_id:
+                    group_ids.add(group_id)
+
+        if received_group_list:
+            self._portal_sync_group_ids_cache = group_ids
+            self._portal_sync_group_ids_cached_at = now
+        return sorted(group_ids)
 
     def _game_websocket_executor(self, command: str, **kwargs):
         """Execute one portal-routed command on the Windows side."""
@@ -18413,27 +18476,26 @@ class MyPlugin(Star):
         category_command: str = "群管功能",
         audience: str = "member",
     ) -> str:
-        """Render actual command syntax instead of feature descriptions."""
-        lines = [
-            str(category_command),
-            "────────────",
-            f"目录：/{category_command} [分类] [功能]｜用户：{permission_label(audience)}",
-        ]
-        rendered = False
-        for category, children in sections or ():
-            if not children:
-                continue
-            lines.append(f"\n{category}")
-            for feature, rows in children:
-                visible_rows = [str(row).strip() for row in rows if str(row).strip()]
-                if not visible_rows:
-                    continue
-                rendered = True
-                lines.append(f"  {feature}")
-                lines.extend(f"    {row}" for row in visible_rows)
-        if not rendered:
-            lines.append("暂无可用群管指令")
-        return "\n".join(lines)
+        """Render the first-level group-management feature names only."""
+        _ = sections, audience
+        feature_names = (
+            "入群审核",
+            "入群欢迎",
+            "黑名单系统",
+            "禁言系统",
+            "踢出系统",
+            "撤回系统",
+            "群消息记录",
+            "关键词过滤",
+            "分群管理员",
+            "自动回复",
+            "用户专属回复",
+            "定时消息",
+            "文转图",
+            "群设置",
+            "黑名单记录",
+        )
+        return "\n".join([str(category_command), "────────────", *feature_names])
 
     @staticmethod
     def _command_help_args(event: AstrMessageEvent, aliases: set[str]) -> list[str]:
@@ -18841,6 +18903,8 @@ class MyPlugin(Star):
             "踢出系统": self._show_kick_help,
             "撤回": self._show_recall_help,
             "撤回系统": self._show_recall_help,
+            "群消息记录": self._show_recall_help,
+            "黑名单记录": self._show_blacklist_help,
             "入群欢迎": self._show_welcome_help,
             "欢迎": self._show_welcome_help,
             "自动回复": self._show_reply_help,
@@ -24284,6 +24348,30 @@ class MyPlugin(Star):
         
         message_str = event.message_str or ""
         cmd = message_str.lstrip('/').strip()
+
+        direct_help_handlers = {
+            "入群审核": self._show_audit_help,
+            "入群欢迎": self._show_welcome_help,
+            "黑名单系统": self._show_blacklist_help,
+            "黑名单记录": self._show_blacklist_help,
+            "禁言系统": self._show_mute_help,
+            "踢出系统": self._show_kick_help,
+            "撤回系统": self._show_recall_help,
+            "群消息记录": self._show_recall_help,
+            "关键词过滤": self._show_keyword_filter_help,
+            "分群管理员": self._show_sub_admin_help,
+            "自动回复": self._show_reply_help,
+            "用户专属回复": self._show_player_reply_help,
+            "定时消息": self._show_timed_msg_help,
+            "文转图": self._show_text_to_image_help,
+            "群设置": self._show_group_config_help,
+        }
+        direct_help_handler = direct_help_handlers.get(cmd)
+        if direct_help_handler is not None:
+            async for result in direct_help_handler(event):
+                yield result
+            event.stop_event()
+            return
 
         category = FEATURE_BY_COMMAND.get(cmd)
         if category is None or (

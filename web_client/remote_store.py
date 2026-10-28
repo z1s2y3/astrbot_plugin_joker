@@ -18,6 +18,7 @@ from sqlalchemy.orm import Session
 from .models import (
     GameAuthorization,
     GroupAccess,
+    GroupClientSync,
     GroupConfigSnapshot,
     Im3Authorization,
     PortalConsoleEvent,
@@ -2474,7 +2475,7 @@ def sync_state(
     else:
         text = "已与本地机器人同步"
         display_text = text
-        detail = "Windows 已成功连接网页，当前显示的是其本地分群配置。"
+        detail = "网页配置已同步到已绑定的 Windows 客户端。"
         badge = "已同步"
     return {
         "online": online,
@@ -2611,16 +2612,51 @@ def known_group_ids(db: Session) -> set[str]:
     return {str(value) for value in db.scalars(select(GroupConfigSnapshot.group_id))}
 
 
-def bound_group_ids(db: Session, client_id: object) -> set[str]:
+def _group_client_sync(
+    db: Session, group_id: str, client_id: str, *, for_update: bool = False
+) -> GroupClientSync | None:
+    statement = select(GroupClientSync).where(
+        GroupClientSync.group_id == str(group_id),
+        GroupClientSync.client_id == str(client_id),
+    )
+    if for_update:
+        statement = statement.with_for_update()
+    return db.scalar(statement)
+
+
+def _update_group_sync_summary(db: Session, snapshot: GroupConfigSnapshot) -> None:
+    states = db.scalars(
+        select(GroupClientSync).where(
+            GroupClientSync.group_id == str(snapshot.group_id)
+        )
+    ).all()
+    if not states:
+        return
+    applied_revision = min(_safe_bigint(item.applied_revision) for item in states)
+    snapshot.applied_revision = applied_revision
+    if applied_revision >= _safe_bigint(snapshot.revision):
+        snapshot.sync_status = "synced"
+        snapshot.sync_error = ""
+    else:
+        failed = next((item.sync_error for item in states if item.sync_error), "")
+        snapshot.sync_status = "error" if failed else "pending"
+        snapshot.sync_error = failed[:255]
+
+
+def bound_group_ids(
+    db: Session,
+    client_id: object,
+    known_ids: list[object] | set[object] | None = None,
+    local_group_ids: list[object] | set[object] | None = None,
+) -> set[str]:
     """Return groups that have a web-account binding for this Windows client.
 
     A local AstrBot installation can contain many groups which have never been
     claimed by a portal account.  Those groups must not receive the regular
-    configuration/runtime/message projection.  ``GroupAccess`` is the durable
-    web-account binding; the snapshot ownership check prevents one Windows
-    client from being told to upload another client's group when several
-    installations share a sync token.  Rows without an owner are included so
-    a newly claimed group can be picked up by its first complete heartbeat.
+    configuration/runtime/message projection. ``GroupAccess`` is the durable
+    web-account binding. The primary snapshot owner and clients that report
+    the same locally joined group receive its canonical web projection. The
+    group account binding remains the tenant boundary.
 
     The function deliberately does not inspect ``expires_at``.  An expired or
     revoked card still needs one last Windows exchange so the local side can
@@ -2630,7 +2666,30 @@ def bound_group_ids(db: Session, client_id: object) -> set[str]:
     normalized_client_id = str(client_id or "").strip()[:64]
     if not normalized_client_id:
         return set()
+    reported_ids = {
+        str(value).strip()
+        for value in [*(known_ids or []), *(local_group_ids or [])]
+        if GROUP_ID_RE.fullmatch(str(value).strip())
+    }
     db.flush()
+    criteria = [
+        GroupConfigSnapshot.client_id == normalized_client_id,
+        select(GroupClientSync.id)
+        .where(
+            GroupClientSync.group_id == GroupAccess.group_id,
+            GroupClientSync.client_id == normalized_client_id,
+        )
+        .exists(),
+    ]
+    if reported_ids:
+        criteria.extend(
+            [
+                GroupConfigSnapshot.group_id.is_(None)
+                & GroupAccess.group_id.in_(reported_ids),
+                (GroupConfigSnapshot.client_id == "")
+                & GroupAccess.group_id.in_(reported_ids),
+            ]
+        )
     rows = db.execute(
         select(GroupAccess.group_id)
         .outerjoin(
@@ -2638,11 +2697,7 @@ def bound_group_ids(db: Session, client_id: object) -> set[str]:
             GroupConfigSnapshot.group_id == GroupAccess.group_id,
         )
         .where(
-            or_(
-                GroupConfigSnapshot.group_id.is_(None),
-                GroupConfigSnapshot.client_id == "",
-                GroupConfigSnapshot.client_id == normalized_client_id,
-            )
+            or_(*criteria)
         )
     ).all()
     return {
@@ -2913,6 +2968,7 @@ def apply_bot_exchange(
     auth_source_complete: bool = True,
     sync_scope_complete: bool = False,
     game_auth_source_complete: bool = True,
+    local_group_ids: list[object] | None = None,
 ) -> list[dict[str, Any]]:
     """Ingest local state and return pending full projections for this client.
 
@@ -2920,7 +2976,9 @@ def apply_bot_exchange(
     are stored in different Windows files.  A config-only projection is safe
     to ingest when auth.json is unavailable, but it must retain/temporarily
     invalidate the portal's card state rather than writing a fabricated empty
-    authorization.  Only a complete pair of sources may reconcile deletion.
+    authorization. For groups bound to a portal account, the Linux web
+    projection is canonical and local Windows config uploads never replace it.
+    Only a complete pair of sources may reconcile deletion.
     """
 
     def change_metadata(snapshot: GroupConfigSnapshot) -> dict[str, Any]:
@@ -2968,6 +3026,97 @@ def apply_bot_exchange(
         for group_id in (known_group_ids or [])
         if GROUP_ID_RE.fullmatch(str(group_id))
     }
+    normalized_local_group_ids = {
+        str(group_id).strip()
+        for group_id in (local_group_ids or [])
+        if config_source_complete
+        and GROUP_ID_RE.fullmatch(str(group_id).strip())
+    }
+    portal_group_ids = {
+        str(group_id).strip()
+        for group_id in db.scalars(select(GroupAccess.group_id))
+        if GROUP_ID_RE.fullmatch(str(group_id).strip())
+    }
+    normalized_client_id = str(client_id or "").strip()[:64]
+    now = utcnow()
+    known_portal_group_ids = normalized_known_ids.intersection(portal_group_ids)
+    discovered_portal_group_ids = normalized_local_group_ids.intersection(
+        portal_group_ids
+    )
+    client_portal_group_ids = set(discovered_portal_group_ids)
+    if normalized_client_id and known_portal_group_ids:
+        for group_id in known_portal_group_ids:
+            snapshot = get_snapshot(db, group_id)
+            if snapshot is not None and snapshot.client_id == normalized_client_id:
+                client_portal_group_ids.add(group_id)
+    if normalized_client_id and client_portal_group_ids:
+        snapshots = {
+            str(snapshot.group_id): snapshot
+            for snapshot in db.scalars(
+                select(GroupConfigSnapshot)
+                .where(GroupConfigSnapshot.group_id.in_(client_portal_group_ids))
+                .with_for_update()
+            )
+        }
+        states = {
+            (str(state.group_id), str(state.client_id)): state
+            for state in db.scalars(
+                select(GroupClientSync)
+                .where(GroupClientSync.group_id.in_(client_portal_group_ids))
+                .with_for_update()
+            )
+        }
+        for group_id in client_portal_group_ids:
+            snapshot = snapshots.get(group_id)
+            if snapshot is None:
+                snapshot = GroupConfigSnapshot(
+                    group_id=group_id,
+                    revision=1,
+                    applied_revision=0,
+                    config_json={"group_id": group_id, "features": {}},
+                    sync_status="pending",
+                    client_id=normalized_client_id,
+                    last_seen_at=now,
+                )
+                db.add(snapshot)
+                snapshots[group_id] = snapshot
+            elif not snapshot.client_id:
+                snapshot.client_id = normalized_client_id
+                snapshot.applied_revision = 0
+                snapshot.sync_status = "pending"
+            owner_id = str(snapshot.client_id or "").strip()
+            if owner_id and (group_id, owner_id) not in states:
+                owner_state = GroupClientSync(
+                    group_id=group_id,
+                    client_id=owner_id,
+                    applied_revision=_safe_bigint(snapshot.applied_revision),
+                )
+                db.add(owner_state)
+                states[(group_id, owner_id)] = owner_state
+            state = states.get((group_id, normalized_client_id))
+            if state is None:
+                is_owner = snapshot.client_id == normalized_client_id
+                state = GroupClientSync(
+                    group_id=group_id,
+                    client_id=normalized_client_id,
+                    applied_revision=(
+                        _safe_bigint(snapshot.applied_revision) if is_owner else 0
+                    ),
+                )
+                db.add(state)
+                states[(group_id, normalized_client_id)] = state
+            elif snapshot.client_id == normalized_client_id:
+                state.applied_revision = max(
+                    _safe_bigint(state.applied_revision),
+                    _safe_bigint(snapshot.applied_revision),
+                )
+            state.last_seen_at = now
+            snapshot.last_seen_at = now
+        db.flush()
+        for group_id in discovered_portal_group_ids:
+            snapshot = snapshots.get(group_id)
+            if snapshot is not None:
+                _update_group_sync_summary(db, snapshot)
     # In an authoritative exchange, ``known_group_ids`` is the complete local
     # set.  Never let a stale/malformed payload re-create a group that the same
     # heartbeat says is absent; otherwise a transient empty list could both
@@ -2981,7 +3130,6 @@ def apply_bot_exchange(
         ]
 
     changes: list[dict[str, Any]] = []
-    now = utcnow()
     if config_source_complete and not auth_source_complete and client_id:
         # A valid-but-empty initialized config directory can accompany a
         # temporarily unreadable auth source.  It contains no per-group item
@@ -3018,7 +3166,10 @@ def apply_bot_exchange(
             )
         )
         for snapshot in list(owned_snapshots):
-            if snapshot.group_id not in normalized_known_ids:
+            if (
+                snapshot.group_id not in normalized_known_ids
+                and snapshot.group_id not in portal_group_ids
+            ):
                 snapshot.revision = 0
                 snapshot.applied_revision = 0
                 snapshot.config_json = {
@@ -3053,6 +3204,25 @@ def apply_bot_exchange(
         ):
             snapshot.revision = _safe_bigint(snapshot.revision)
             snapshot.applied_revision = _safe_bigint(snapshot.applied_revision)
+            if snapshot.group_id in portal_group_ids:
+                state = _group_client_sync(db, snapshot.group_id, normalized_client_id)
+                if state is None:
+                    continue
+                state.last_seen_at = now
+                snapshot.last_seen_at = now
+                if snapshot.client_id != normalized_client_id:
+                    continue
+                if auth_source_complete and snapshot.sync_status in {
+                    LOCAL_SOURCE_PROTECTED_STATUS,
+                    LOCAL_SOURCE_PARTIAL_STATUS,
+                }:
+                    snapshot.sync_status = (
+                        "pending"
+                        if snapshot.revision > snapshot.applied_revision
+                        else "synced"
+                    )
+                    snapshot.sync_error = ""
+                continue
             snapshot.client_id = client_id[:64]
             snapshot.last_seen_at = now
             if auth_source_complete and snapshot.sync_status in {
@@ -3095,6 +3265,15 @@ def apply_bot_exchange(
             has_config or has_auth or has_game_auth
         ):
             continue
+        is_portal_group = group_id in portal_group_ids
+        if is_portal_group:
+            state = _group_client_sync(db, group_id, normalized_client_id)
+            if state is None:
+                continue
+            state.last_seen_at = now
+            snapshot_owner = get_snapshot(db, group_id)
+            if snapshot_owner is not None and snapshot_owner.client_id != normalized_client_id:
+                continue
         if has_game_auth and not (has_config or has_auth):
             apply_game_authorization_heartbeat(
                 db, client_id, group_id, item.get("game_auth")
@@ -3118,20 +3297,37 @@ def apply_bot_exchange(
             snapshot = GroupConfigSnapshot(
                 group_id=group_id,
                 revision=1,
-                applied_revision=1,
+                applied_revision=0 if is_portal_group else 1,
                 config_json=(
-                    incoming
-                    if isinstance(incoming, dict)
-                    else {"group_id": group_id, "features": {}}
+                    {"group_id": group_id, "features": {}}
+                    if is_portal_group
+                    else (
+                        incoming
+                        if isinstance(incoming, dict)
+                        else {"group_id": group_id, "features": {}}
+                    )
                 ),
-                sync_status="synced",
+                sync_status="pending" if is_portal_group else "synced",
             )
             db.add(snapshot)
             db.flush()
         else:
             snapshot.revision = _safe_bigint(snapshot.revision)
             snapshot.applied_revision = _safe_bigint(snapshot.applied_revision)
-        if has_config and snapshot.revision <= snapshot.applied_revision:
+            if (
+                is_portal_group
+                and snapshot.client_id
+                and snapshot.client_id != client_id[:64]
+            ):
+                continue
+            if is_portal_group and not snapshot.client_id:
+                snapshot.applied_revision = 0
+                snapshot.sync_status = "pending"
+        if (
+            has_config
+            and not is_portal_group
+            and snapshot.revision <= snapshot.applied_revision
+        ):
             # No pending web edit: local remains canonical and refreshes MySQL.
             snapshot.config_json = incoming
             snapshot.sync_status = "synced"
@@ -3195,6 +3391,7 @@ def apply_bot_exchange(
 
         if (
             has_config
+            and not is_portal_group
             and snapshot.revision > snapshot.applied_revision
             and group_id not in change_ids
         ):
@@ -3202,6 +3399,29 @@ def apply_bot_exchange(
                 {
                     "group_id": group_id,
                     "revision": snapshot.revision,
+                    "config": _client_config(snapshot.config_json),
+                    **change_metadata(snapshot),
+                }
+            )
+            change_ids.add(group_id)
+
+    if normalized_client_id:
+        for group_id in sorted(portal_group_ids):
+            state = _group_client_sync(db, group_id, normalized_client_id)
+            if state is None:
+                continue
+            snapshot = get_snapshot(db, group_id)
+            if snapshot is None:
+                continue
+            state.last_seen_at = now
+            if snapshot.revision <= _safe_bigint(state.applied_revision):
+                continue
+            if group_id in change_ids:
+                continue
+            changes.append(
+                {
+                    "group_id": group_id,
+                    "revision": _safe_bigint(snapshot.revision),
                     "config": _client_config(snapshot.config_json),
                     **change_metadata(snapshot),
                 }
@@ -3389,6 +3609,23 @@ def record_bot_sync_failures(
             continue
         snapshot.revision = _safe_bigint(snapshot.revision)
         snapshot.applied_revision = _safe_bigint(snapshot.applied_revision)
+        if db.scalar(
+            select(GroupAccess.id).where(GroupAccess.group_id == group_id)
+        ) is not None:
+            state = _group_client_sync(
+                db, group_id, normalized_client_id, for_update=True
+            )
+            if (
+                state is None
+                or snapshot.revision != revision
+                or _safe_bigint(state.applied_revision) >= revision
+            ):
+                continue
+            state.sync_error = summary[:255]
+            state.last_seen_at = utcnow()
+            _update_group_sync_summary(db, snapshot)
+            accepted += 1
+            continue
         if (
             not snapshot.client_id
             or snapshot.client_id != normalized_client_id
@@ -3430,6 +3667,22 @@ def acknowledge_bot_changes(
             continue
         snapshot.revision = _safe_bigint(snapshot.revision)
         snapshot.applied_revision = _safe_bigint(snapshot.applied_revision)
+        if db.scalar(
+            select(GroupAccess.id).where(GroupAccess.group_id == group_id)
+        ) is not None:
+            state = _group_client_sync(
+                db, group_id, normalized_client_id, for_update=True
+            )
+            if state is None or revision > snapshot.revision:
+                continue
+            state.last_seen_at = utcnow()
+            if revision > _safe_bigint(state.applied_revision):
+                state.applied_revision = revision
+            state.sync_error = ""
+            _update_group_sync_summary(db, snapshot)
+            count += 1
+            acknowledged_group_ids.append(group_id)
+            continue
         # Verify ownership before accepting either an exact or superseded
         # revision. An old Windows instance must never ACK a group after a new
         # instance has taken over the snapshot.
@@ -3445,7 +3698,9 @@ def acknowledge_bot_changes(
                 acknowledged_group_ids.append(group_id)
                 count += 1
             continue
-        if isinstance(config, dict):
+        if isinstance(config, dict) and db.scalar(
+            select(GroupAccess.id).where(GroupAccess.group_id == group_id)
+        ) is None:
             snapshot.config_json = _secure_projection(config, snapshot.config_json)
             snapshot.config_json["group_id"] = group_id
         snapshot.applied_revision = revision

@@ -133,6 +133,22 @@ class GroupConfigSnapshot(Base):
     )
 
 
+class GroupClientSync(Base):
+    """Per-installation ACK cursor for a group-authorized web projection."""
+
+    __tablename__ = "portal_group_client_sync"
+    __table_args__ = (
+        UniqueConstraint("group_id", "client_id", name="uq_portal_group_client_sync"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    group_id: Mapped[str] = mapped_column(String(32), index=True)
+    client_id: Mapped[str] = mapped_column(String(64), index=True)
+    applied_revision: Mapped[int] = mapped_column(Integer, default=0, server_default="0", nullable=False)
+    last_seen_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    sync_error: Mapped[str] = mapped_column(String(255), default="", nullable=False)
+
+
 class GameAuthorization(Base):
     """The owner-generated game license and its Windows heartbeat."""
 

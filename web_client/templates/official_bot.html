@@ -1,0 +1,36 @@
+{% extends "admin_base.html" if current_user.is_admin else "user_base.html" %}
+{% block title %}QQ 官方机器人 · 群 {{ group_id }} · {{ portal_name }}{% endblock %}
+{% block content %}
+<section class="hero compact">
+  <div><div class="eyebrow">OFFICIAL QQ BOT</div><h1>QQ 官方机器人</h1><p class="muted">群 {{ group_id }} · 每个功能单独配置，保存后直接同步到官方机器人。</p></div>
+  <div class="row-actions"><a class="button secondary" href="{{ group_prefix }}/{{ group_id }}">返回群设置</a></div>
+</section>
+{% if not official.available %}
+<section class="panel"><div class="section-heading"><div><h2>暂时无法读取</h2><p>{{ official.error or '官方机器人控制台没有返回该群数据。' }}</p></div></div><p class="muted">请先在官方机器人群内执行 <code>/绑定官方群 {{ group_id }}</code>，再刷新本页。</p></section>
+{% else %}
+<section class="panel">
+  <div class="section-heading"><div><h2>群状态</h2><p>官方群 OpenID：{{ official.scope_id }}</p></div><span class="pill active">已连接</span></div>
+  <div class="summary-grid">
+    <div><strong>{{ official.summary.numeric_group_id or group_id }}</strong><span>数字群号</span></div>
+    <div><strong>{{ official.summary.message_count }}</strong><span>消息记录</span></div>
+    <div><strong>{{ official.message_users|length }}</strong><span>活跃用户</span></div>
+    <div><strong>{{ official.summary.admin_count }}</strong><span>分群管理员</span></div>
+  </div>
+</section>
+<section class="feature-grid">
+  <a class="panel quick-action featured" href="{{ group_prefix }}/{{ group_id }}/official-bot/features"><span class="quick-action-icon">⚙</span><span><strong>功能开关</strong><small>逐项开启或关闭已实现功能</small></span></a>
+  <a class="panel quick-action" href="{{ group_prefix }}/{{ group_id }}/official-bot/moderation"><span class="quick-action-icon">◆</span><span><strong>群管理</strong><small>禁言、解禁、踢出、黑名单和撤回机器人消息</small></span></a>
+  <a class="panel quick-action" href="{{ group_prefix }}/{{ group_id }}/official-bot/blacklist"><span class="quick-action-icon">!</span><span><strong>黑名单</strong><small>查看和维护官方黑名单</small></span></a>
+  <a class="panel quick-action" href="{{ group_prefix }}/{{ group_id }}/official-bot/keyword-mute"><span class="quick-action-icon">M</span><span><strong>关键词禁言</strong><small>独立配置命中关键词后的禁言规则</small></span></a>
+  <a class="panel quick-action" href="{{ group_prefix }}/{{ group_id }}/official-bot/keyword-kick"><span class="quick-action-icon">K</span><span><strong>关键词踢出</strong><small>独立配置命中关键词后的踢出规则</small></span></a>
+  <a class="panel quick-action" href="{{ group_prefix }}/{{ group_id }}/official-bot/keyword-blacklist"><span class="quick-action-icon">B</span><span><strong>关键词黑名单</strong><small>独立配置命中关键词后的拉黑规则</small></span></a>
+  <a class="panel quick-action" href="{{ group_prefix }}/{{ group_id }}/official-bot/auto-replies"><span class="quick-action-icon">↩</span><span><strong>自动回复</strong><small>普通关键词回复单独维护</small></span></a>
+  <a class="panel quick-action" href="{{ group_prefix }}/{{ group_id }}/official-bot/messages"><span class="quick-action-icon">☷</span><span><strong>群消息与用户</strong><small>查看收到的消息和发言用户</small></span></a>
+  <a class="panel quick-action" href="{{ group_prefix }}/{{ group_id }}/official-bot/schedules"><span class="quick-action-icon">◷</span><span><strong>定时消息</strong><small>单独设置重复发送任务</small></span></a>
+</section>
+<section class="panel">
+  <div class="section-heading"><div><h2>能力边界</h2><p class="muted">页面只显示已接入并能调用的官方机器人功能。</p></div></div>
+  <p class="muted">关键词撤回没有加入页面：官方接口不能可靠撤回群成员发送的消息；群管理页只提供官方接口允许的撤回机器人消息。</p>
+</section>
+{% endif %}
+{% endblock %}

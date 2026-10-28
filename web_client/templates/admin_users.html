@@ -2,7 +2,7 @@
 {% block title %}用户管理 · {{ portal_name }}{% endblock %}
 {% block content %}
 <section class="hero compact">
-  <div><div class="eyebrow">ACCOUNT MANAGEMENT</div><h1>用户管理</h1><p class="muted">查看客户与后台管理员账号，并在此创建、授权或停用账号。</p></div>
+  <div><div class="eyebrow">ACCOUNT MANAGEMENT</div><h1>注册用户</h1><p class="muted">查看分群注册用户、管理员账号和每个用户绑定的群。</p></div>
   <div class="row-actions"><a class="button secondary" href="/admin">返回概览</a></div>
 </section>
 
@@ -14,7 +14,7 @@
 </section>
 
 <section class="panel admin-section" id="users">
-  <div class="section-heading"><div><h2>所有用户</h2><p>客户和后台管理员账号。</p></div></div>
+  <div class="section-heading"><div><h2>注册用户列表</h2><p>包含分群用户和后台管理员账号。</p></div></div>
   <div class="table-wrap"><table>
     <thead><tr><th>ID</th><th>账号</th><th>角色</th><th>状态</th><th>分群数</th><th>注册时间</th><th></th></tr></thead>
     <tbody>{% for item in users %}<tr>

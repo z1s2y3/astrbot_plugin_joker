@@ -1621,6 +1621,7 @@ class PortalSyncClient:
         show_connection_events: bool = True,
         runtime_settings_callback: Callable[[dict[str, Any]], Any] | None = None,
         portal_action_callback: Callable[[str, list[dict[str, Any]]], Any] | None = None,
+        local_group_ids_callback: Callable[[], Any] | None = None,
     ) -> None:
         self.base_url = str(base_url or "").strip().rstrip("/")
         # SCUM is an isolated read-only path. It may use a dedicated relay
@@ -1646,6 +1647,7 @@ class PortalSyncClient:
         # without exposing them to the console.
         self.runtime_settings_callback = runtime_settings_callback
         self.portal_action_callback = portal_action_callback
+        self.local_group_ids_callback = local_group_ids_callback
         self.last_success_at = 0
         self.last_error = ""
         self._last_error_log_code = ""
@@ -3940,6 +3942,22 @@ class PortalSyncClient:
         }
         if game_auth_complete:
             group_ids.update(game_auth_group_ids)
+        local_group_ids = set(group_ids)
+        if config_source_complete and callable(self.local_group_ids_callback):
+            try:
+                listed_group_ids = self.local_group_ids_callback()
+                if inspect.isawaitable(listed_group_ids):
+                    listed_group_ids = await listed_group_ids
+                if isinstance(listed_group_ids, (list, tuple, set)):
+                    local_group_ids.update(
+                        normalized
+                        for value in listed_group_ids
+                        if (normalized := self._valid_failure_group_id(value))
+                    )
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.debug("读取 Windows 本机已加入群列表失败", exc_info=True)
         auth_source_recovered = (
             auth_source_complete is True
             and self._last_auth_source_complete is False
@@ -4290,6 +4308,12 @@ class PortalSyncClient:
             ]
         payload = {
             "client_id": self.client_id,
+            # Group IDs alone let Linux discover this installation for a
+            # group that already has a canonical web configuration. The
+            # server never accepts a config from this discovery field.
+            "local_group_ids": sorted(local_group_ids)
+            if config_source_complete
+            else [],
             # Only a complete config directory can be used to reconcile local
             # group deletion.  The server still uses these IDs to route a
             # one-group refresh when the auth source is temporarily absent.
@@ -4625,6 +4649,7 @@ class PortalSyncClient:
                 if (
                     is_current_web_revision
                     and group_id in locally_changed_config_group_ids
+                    and group_id not in (self._server_managed_group_ids or set())
                 ):
                     # Windows is the execution-side source of truth.  Do not
                     # write an older pending portal projection over a local

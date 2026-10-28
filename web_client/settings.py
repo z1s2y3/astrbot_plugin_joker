@@ -95,6 +95,9 @@ class Settings:
     # Keep a slow sync transaction inside the app boundary so the reverse
     # proxy does not turn it into an opaque 502 for the Windows client.
     sync_exchange_timeout_seconds: int = 40
+    official_bot_url: str = ""
+    official_bot_token: str = ""
+    official_bot_timeout_seconds: int = 10
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -187,6 +190,13 @@ class Settings:
             ),
             sync_exchange_timeout_seconds=bounded_int(
                 "JOKER_WEB_SYNC_EXCHANGE_TIMEOUT", 40, 8, 90
+            ),
+            official_bot_url=os.getenv(
+                "JOKER_OFFICIAL_BOT_URL", "https://bbt.yooyun.top"
+            ).strip().rstrip("/"),
+            official_bot_token=os.getenv("JOKER_OFFICIAL_BOT_TOKEN", "").strip(),
+            official_bot_timeout_seconds=bounded_int(
+                "JOKER_OFFICIAL_BOT_TIMEOUT", 10, 3, 30
             ),
         )
 
