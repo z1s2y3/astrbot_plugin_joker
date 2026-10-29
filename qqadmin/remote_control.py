@@ -21,9 +21,8 @@ def _default_state() -> dict[str, Any]:
         "allow_new_clients": True,
         "allowed_client_ids": [],
         "blocked_client_ids": [],
-        # A remotely managed installation stays quiet until the first
-        # authenticated Linux exchange decides whether this client may run.
-        "client_allowed": False,
+        "policy_received": False,
+        "client_allowed": True,
     }
 
 
@@ -55,6 +54,12 @@ def normalize_execution_control(value: object) -> dict[str, Any]:
         value.get("blocked_client_ids"), _CLIENT_ID_RE
     )
     state["client_allowed"] = bool(value.get("client_allowed", True))
+    state["policy_received"] = bool(
+        value.get(
+            "policy_received",
+            "client_id" in value or "server_time" in value,
+        )
+    )
     if "client_id" in value:
         state["client_id"] = str(value.get("client_id") or "").strip()[:64]
     if "server_time" in value:

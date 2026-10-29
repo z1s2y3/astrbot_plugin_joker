@@ -1,6 +1,6 @@
 name: astrbot_plugin_joker
 display_name: Joker QQ群管助手
 desc: SCUM 查询与 QQ 群管插件，支持审核、群成员管理、自动回复、签到统计、定时播报和分群配置
-version: v1.11.410
+version: v1.11.411
 author: joker
 repo: https://github.com/z1s2y3/astrbot_plugin_joker

@@ -4120,15 +4120,16 @@ class MyPlugin(Star):
         if not sender_id:
             return False
         control = getattr(self, "_portal_execution_control", {})
-        if getattr(self, "web_sync_enabled", False) and not bool(
-            control.get("client_allowed", False)
+        policy_received = bool(control.get("policy_received", False))
+        if (
+            getattr(self, "web_sync_enabled", False)
+            and policy_received
+            and not bool(control.get("client_allowed", False))
         ):
             return False
-        owner_ids = (
-            control.get("owner_ids", [])
-            if bool(control.get("enforce_owner_ids", False))
-            else self.owner_ids
-        )
+        owner_ids = self.owner_ids
+        if policy_received and bool(control.get("enforce_owner_ids", False)):
+            owner_ids = control.get("owner_ids", [])
         return sender_id in {
             self._normalize_positive_id(owner_id)
             for owner_id in owner_ids
@@ -4139,10 +4140,11 @@ class MyPlugin(Star):
         """Return the last Linux decision for this Windows installation."""
         if not getattr(self, "web_sync_enabled", False):
             return True
+        control = getattr(self, "_portal_execution_control", {})
+        if not bool(control.get("policy_received", False)):
+            return True
         return bool(
-            getattr(self, "_portal_execution_control", {}).get(
-                "client_allowed", False
-            )
+            control.get("client_allowed", False)
         )
 
     def _should_convert_to_image(self, event: AstrMessageEvent) -> bool:

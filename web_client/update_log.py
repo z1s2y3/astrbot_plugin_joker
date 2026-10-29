@@ -10,6 +10,16 @@ from copy import deepcopy
 # remains available even on a freshly installed portal.
 UPDATE_LOG: tuple[dict[str, object], ...] = (
     {
+        "version": "1.11.411",
+        "date": "2026-10-29",
+        "title": "兼容旧群管功能",
+        "items": (
+            "中心控制首次同步前不影响现有群管流程。",
+            "临时断网或缺少旧缓存时不会停止旧功能。",
+            "只有 Linux 明确停用的执行端才会被停止。",
+        ),
+    },
+    {
         "version": "1.11.410",
         "date": "2026-10-29",
         "title": "新增 Linux 中心控制",
