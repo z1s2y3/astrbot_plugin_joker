@@ -10,6 +10,16 @@ from copy import deepcopy
 # remains available even on a freshly installed portal.
 UPDATE_LOG: tuple[dict[str, object], ...] = (
     {
+        "version": "1.11.408",
+        "date": "2026-10-29",
+        "title": "修复按群手动拉取网页配置",
+        "items": (
+            "新增 Windows 手动请求当前群网页配置的同步接口。",
+            "网页端按群授权处理，不绑定电脑，换 Windows 设备无需重新兑换授权卡密。",
+            "接口不存在或请求失败时显示明确原因，不再显示 TypeError/unknown。",
+        ),
+    },
+    {
         "version": "1.11.406",
         "date": "2026-10-29",
         "title": "拆分官方机器人群管功能",
