@@ -15,6 +15,7 @@ import re
 from pathlib import Path
 from time import perf_counter, sleep, time as unix_time
 from types import SimpleNamespace
+from typing import Any
 from urllib.parse import quote, urlencode, urlsplit
 from uuid import uuid4
 

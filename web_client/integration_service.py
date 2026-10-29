@@ -25,6 +25,7 @@ import ssl
 import sqlite3
 import tempfile
 import threading
+from pathlib import Path
 from typing import Any, Mapping
 from urllib.parse import quote_plus
 

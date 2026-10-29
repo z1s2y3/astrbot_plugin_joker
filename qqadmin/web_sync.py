@@ -13,7 +13,6 @@ import re
 import socket
 import tempfile
 import time
-from urllib.parse import urlsplit
 from pathlib import Path
 from typing import Any, Callable, Mapping
 from urllib.parse import urlsplit
@@ -967,8 +966,6 @@ def build_runtime_summary(group_id: str) -> dict[str, Any]:
         # stored in the existing Windows cache.  Keep only fields needed by the
         # web selector; QQ IDs and display names are not sent elsewhere.
         from .welcome import get_group_members
-        from .group_config import get_group_data
-
         members: list[dict[str, Any]] = []
         raw_members = get_group_members(str(group_id))
         # Hot reloads can leave ``welcome`` and ``group_config`` with separate

@@ -134,7 +134,6 @@ from .scum import (
     resolve_group_database_path,
     ALLOWED_CURRENCY_COLUMNS,
     apply_signin_reward,
-    update_player_name,
     reset_signin_record,
     credit_player,
     debit_player,
@@ -219,8 +218,6 @@ from .qqadmin import (
     get_audit_requests,
     set_audit_settings, add_to_whitelist, remove_from_whitelist,
     set_verification_settings,
-    remove_challenge,
-    clean_expired_challenges_and_kick,
     # 邀请统计
     record_invitation, get_inviter_count, get_top_inviter,
     get_all_excessive_inviter_stats, get_invited_users_by_inviter,
@@ -312,7 +309,7 @@ def _compact_reply_text(text: str) -> str:
     return compact
 
 
-@register("astrbot_plugin_joker", "Joker", "SCUM 查询与 QQ 群管插件", "1.11.410")
+@register("astrbot_plugin_joker", "Joker", "SCUM 查询与 QQ 群管插件", "1.11.413")
 class MyPlugin(Star):
     _MEMBER_REFRESH_WARNING_COOLDOWN_SECONDS = 300
     _GROUP_BOT_ACTIVITY_TTL_SECONDS = 120
@@ -3676,7 +3673,7 @@ class MyPlugin(Star):
         self._music_share_seen: dict[str, float] = {}
         self._music_share_seen_ttl = 30.0
         
-        logger.debug("Joker 插件初始化完成，版本 1.11.406")
+        logger.debug("Joker 插件初始化完成，版本 1.11.413")
 
     @staticmethod
     def _write_json_atomic(path: str, data: dict) -> None:
@@ -17754,6 +17751,8 @@ class MyPlugin(Star):
             if not admission:
                 return
             sent_at = int(time.time())
+            from .qqadmin.group_config import update_group_data
+
             update_group_data(
                 group_id,
                 "audit_pending",

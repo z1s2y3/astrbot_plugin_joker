@@ -10,6 +10,16 @@ from copy import deepcopy
 # remains available even on a freshly installed portal.
 UPDATE_LOG: tuple[dict[str, object], ...] = (
     {
+        "version": "1.11.413",
+        "date": "2026-10-29",
+        "title": "修复新电脑插件更新",
+        "items": (
+            "插件注册版本、元数据版本和发布版本统一为 1.11.413。",
+            "更新源改为 GitHub master 分支直链，更新时不再依赖 Releases API。",
+            "修复入群验证提示记录更新时缺少群配置函数导入的问题。",
+        ),
+    },
+    {
         "version": "1.11.412",
         "date": "2026-10-29",
         "title": "统一中心主人权限",
