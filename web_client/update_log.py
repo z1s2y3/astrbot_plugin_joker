@@ -10,6 +10,16 @@ from copy import deepcopy
 # remains available even on a freshly installed portal.
 UPDATE_LOG: tuple[dict[str, object], ...] = (
     {
+        "version": "1.11.412",
+        "date": "2026-10-29",
+        "title": "统一中心主人权限",
+        "items": (
+            "启用 Linux 网页同步后，主人权限只使用 Linux 中心策略；未启用网页同步时继续使用本机主人配置。",
+            "新电脑首次同步前不会继承本地主人配置。",
+            "普通群管功能继续按群主和群管理员身份运行。",
+        ),
+    },
+    {
         "version": "1.11.411",
         "date": "2026-10-29",
         "title": "兼容旧群管功能",

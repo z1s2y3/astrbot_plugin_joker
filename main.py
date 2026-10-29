@@ -4121,12 +4121,11 @@ class MyPlugin(Star):
             return False
         control = getattr(self, "_portal_execution_control", {})
         policy_received = bool(control.get("policy_received", False))
-        if (
-            getattr(self, "web_sync_enabled", False)
-            and policy_received
-            and not bool(control.get("client_allowed", False))
-        ):
-            return False
+        if getattr(self, "web_sync_enabled", False):
+            if not policy_received:
+                return False
+            if not bool(control.get("client_allowed", False)):
+                return False
         owner_ids = self.owner_ids
         if policy_received and bool(control.get("enforce_owner_ids", False)):
             owner_ids = control.get("owner_ids", [])
@@ -10345,12 +10344,7 @@ class MyPlugin(Star):
         sender_id_str = self._get_sender_id_from_event(event)
         
         # 1. 先检查是否是机器人主人（最快）
-        owner_ids_str = {
-            self._normalize_positive_id(owner_id)
-            for owner_id in self.owner_ids
-            if self._normalize_positive_id(owner_id)
-        }
-        if sender_id_str in owner_ids_str:
+        if self._is_owner(event):
             return True
         
         group_id = self._get_group_id_from_event(event)
@@ -10742,12 +10736,7 @@ class MyPlugin(Star):
         sender_id_str = self._get_sender_id_from_event(event)
 
         # 1. 机器人主人视为群主权限
-        owner_ids_str = {
-            self._normalize_positive_id(owner_id)
-            for owner_id in self.owner_ids
-            if self._normalize_positive_id(owner_id)
-        }
-        if sender_id_str in owner_ids_str:
+        if self._is_owner(event):
             return True
 
         # 2. 检查事件和群对象携带的角色
@@ -19368,13 +19357,8 @@ class MyPlugin(Star):
             return False
         if self._cached_member_role(group_id, user_id) in {"admin", "owner"}:
             return False
-        try:
-            if self._normalize_positive_id(user_id) in {
-                self._normalize_positive_id(owner_id) for owner_id in self.owner_ids
-            }:
-                return False
-        except Exception:
-            pass
+        if self._is_owner(event):
+            return False
         try:
             binding = get_steam_binding(group_id, user_id=user_id) or {}
             if normalize_steam_id(binding.get("steam_id", "")):
@@ -27530,9 +27514,8 @@ class MyPlugin(Star):
             return
 
         # 检查是否是主人
-        owner_ids_str = [str(oid) for oid in self.owner_ids]
         sender_id_str = str(user_id)
-        if sender_id_str in owner_ids_str:
+        if self._is_owner(event):
             return
 
         # Respect the configured manual/automatic scope.  Adapters that do
