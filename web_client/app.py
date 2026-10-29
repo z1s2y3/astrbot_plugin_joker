@@ -42,6 +42,7 @@ from .models import (
     AuditLog,
     GameAuthorization,
     GroupAccess,
+    GroupClientSync,
     GroupConfigSnapshot,
     LoginAttempt,
     PortalDatabaseSnapshot,
@@ -164,6 +165,13 @@ from .integration_service import (
 )
 from .official_bot_service import OFFICIAL_FEATURES, OfficialBotClient, OfficialBotError
 from .runner_interface import get_runner_deployment, set_linux_migration_prepared
+from .execution_control import (
+    execution_control_for_client,
+    get_execution_control,
+    list_execution_clients,
+    record_execution_client,
+    save_execution_control,
+)
 from .scum_query_service import LinuxScumQueryService
 from .websocket_api import (
     GAME_WS_CLOSE_FORBIDDEN,
@@ -812,6 +820,35 @@ def _process_sync_exchange(
 
     db = get_session_factory()()
     try:
+        record_execution_client(db, client_id)
+        execution_control = execution_control_for_client(db, client_id)
+        if not execution_control["client_allowed"]:
+            # Keep the response successful so older Windows clients do not
+            # enter an HTTP retry loop. New clients persist this decision and
+            # stop processing local plugin events immediately.
+            db.commit()
+            return {
+                "status": "ok",
+                "blocked": True,
+                "client_id": client_id,
+                "execution_control": execution_control,
+                "changes": [],
+                "console_events": [],
+                "accepted_console_event_ids": [],
+                "reported_failures": [],
+                "missing_group_ids": [],
+                "refresh_group_ids": [],
+                "bound_group_ids": [],
+                "managed_group_ids": [],
+                "runtime_accepted_group_ids": [],
+                "message_cache_replay_requests": [],
+                "claimable_group_ids": [],
+                "console": {"enabled": False, "messages_enabled": False},
+                "config_source_complete": config_source_complete,
+                "auth_source_complete": auth_source_complete,
+                "game_auth_source_complete": game_auth_source_complete,
+                "sync_scope_complete": bool(sync_scope_complete),
+            }
         changes = remote_store.apply_bot_exchange(
             db,
             client_id,
@@ -1009,6 +1046,7 @@ def _process_sync_exchange(
             "auth_source_complete": auth_source_complete,
             "game_auth_source_complete": game_auth_source_complete,
             "sync_scope_complete": bool(sync_scope_complete),
+            "execution_control": execution_control,
         }
         db.commit()
         return response
@@ -5680,6 +5718,8 @@ def create_app() -> FastAPI:
                 request,
                 user,
                 runner=get_runner_deployment(db),
+                execution_control=get_execution_control(db),
+                execution_clients=list_execution_clients(db),
             ),
         )
 
@@ -5689,6 +5729,73 @@ def create_app() -> FastAPI:
         if isinstance(user, RedirectResponse):
             return user
         form = await _validated_form(request)
+        action = str(form.get("action", "deployment")).strip()
+        if action == "save_execution_control":
+            try:
+                control = save_execution_control(
+                    db,
+                    owner_ids=form.get("owner_ids", ""),
+                    enforce_owner_ids=str(form.get("enforce_owner_ids", "")) == "on",
+                    allow_new_clients=str(form.get("allow_new_clients", "")) == "on",
+                    allowed_client_ids=form.get("allowed_client_ids", ""),
+                    blocked_client_ids=form.get("blocked_client_ids", ""),
+                    operator_id=user.id,
+                )
+                add_audit_log(
+                    db,
+                    user,
+                    None,
+                    "execution_control_update",
+                    "更新中心主人与执行端控制策略",
+                    request,
+                    {"enforce_owner_ids": control["enforce_owner_ids"]},
+                )
+                db.commit()
+                _flash(request, "中心控制策略已保存；执行端将在下一次同步时生效。", "success")
+            except (ValueError, PortalError) as exc:
+                db.rollback()
+                _flash(request, str(exc), "error")
+            return _redirect("/admin/deployment")
+
+        if action == "set_client_access":
+            client_id = str(form.get("client_id", "")).strip()[:64]
+            if not client_id:
+                _flash(request, "执行端编号不能为空", "error")
+                return _redirect("/admin/deployment")
+            control = get_execution_control(db)
+            blocked = set(control["blocked_client_ids"])
+            if str(form.get("client_action", "")) == "block":
+                blocked.add(client_id)
+                message = "已停用该执行端"
+            else:
+                blocked.discard(client_id)
+                message = "已恢复该执行端"
+            try:
+                save_execution_control(
+                    db,
+                    owner_ids=control["owner_ids"],
+                    enforce_owner_ids=control["enforce_owner_ids"],
+                    allow_new_clients=control["allow_new_clients"],
+                    allowed_client_ids=control["allowed_client_ids"],
+                    blocked_client_ids=sorted(blocked),
+                    operator_id=user.id,
+                )
+                add_audit_log(
+                    db,
+                    user,
+                    None,
+                    "execution_client_access_update",
+                    message,
+                    request,
+                    {"client_id": client_id},
+                )
+                db.commit()
+                _flash(request, f"{message}：{client_id}", "success")
+            except (ValueError, PortalError) as exc:
+                db.rollback()
+                _flash(request, str(exc), "error")
+            return _redirect("/admin/deployment")
+
         prepared = str(form.get("linux_migration_prepared", "")) == "on"
         runner = set_linux_migration_prepared(db, prepared, user.id)
         add_audit_log(

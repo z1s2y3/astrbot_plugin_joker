@@ -307,6 +307,7 @@ _SYNC_ERROR_MESSAGES = {
         "网页同步接口返回无效数据，请检查 Linux 网页服务版本、反向代理和响应内容。"
     ),
     "sync_storage_busy": "网页数据库正被其他同步占用，Windows 已保留本地数据并自动重试。",
+    "execution_client_blocked": "该 Windows 执行端已被 Linux 网页停用，请联系主人恢复。",
     "sync_transaction_failed": "网页同步事务失败，请查看 Linux 网页服务日志；Windows 将继续保留本地配置。",
     "member_directory_storage_busy": "网页成员目录正在写入，Windows 已保留本地成员列表并自动补传。",
     "member_directory_storage_failed": "网页成员目录写入失败，Windows 已保留本地成员列表，请检查网页服务日志。",
@@ -1635,6 +1636,7 @@ class PortalSyncClient:
         runtime_settings_callback: Callable[[dict[str, Any]], Any] | None = None,
         portal_action_callback: Callable[[str, list[dict[str, Any]]], Any] | None = None,
         local_group_ids_callback: Callable[[], Any] | None = None,
+        execution_control_callback: Callable[[dict[str, Any]], Any] | None = None,
     ) -> None:
         self.base_url = str(base_url or "").strip().rstrip("/")
         # SCUM is an isolated read-only path. It may use a dedicated relay
@@ -1661,6 +1663,7 @@ class PortalSyncClient:
         self.runtime_settings_callback = runtime_settings_callback
         self.portal_action_callback = portal_action_callback
         self.local_group_ids_callback = local_group_ids_callback
+        self.execution_control_callback = execution_control_callback
         self.last_success_at = 0
         self.last_error = ""
         self._last_error_log_code = ""
@@ -4396,6 +4399,32 @@ class PortalSyncClient:
         }
         timeout = httpx.Timeout(_EXCHANGE_TIMEOUT_SECONDS, connect=8.0)
         result = await self._post_json("/api/sync/v1/exchange", payload, timeout)
+        execution_control = (
+            result.get("execution_control") if isinstance(result, dict) else None
+        )
+        if isinstance(execution_control, dict) and callable(
+            self.execution_control_callback
+        ):
+            try:
+                callback_result = self.execution_control_callback(execution_control)
+                if inspect.isawaitable(callback_result):
+                    await callback_result
+            except Exception as exc:
+                logger.warning("Linux 执行端控制策略应用失败：%s", exc)
+        if isinstance(execution_control, dict) and not bool(
+            execution_control.get("client_allowed", True)
+        ):
+            self.last_error = "execution_client_blocked"
+            self._last_sync_group_ids = ()
+            logger.warning(
+                "该 Windows 执行端已被 Linux 网页停用 client_id=%s",
+                self.client_id,
+            )
+            return {
+                "blocked": True,
+                "client_id": self.client_id,
+                "execution_control": execution_control,
+            }
         if runtime_summaries:
             accepted = 0
             accepted_known = False

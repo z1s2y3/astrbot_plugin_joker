@@ -1,32 +1,51 @@
 {% extends "admin_base.html" %}
-{% block title %}执行端迁移 · {{ portal_name }}{% endblock %}
+{% block title %}中心控制 · {{ portal_name }}{% endblock %}
 {% block content %}
 <a class="back-link" href="/admin">← 返回管理后台</a>
 <section class="hero compact">
-  <div><div class="eyebrow">RUNNER MIGRATION</div><h1>执行端迁移预留</h1><p class="muted">Windows 为唯一执行端；Linux 仅运行网页和同步。</p></div>
-  <span class="pill active">当前执行：Windows</span>
+  <div><div class="eyebrow">CENTRAL CONTROL</div><h1>中心控制</h1><p class="muted">Linux 网页端保存授权、主人和群配置，Windows 只作为执行端。</p></div>
+  <span class="pill active">Linux 为主</span>
 </section>
 
-<div class="license-warning neutral"><strong>不会自动迁移</strong><span>此开关只记录迁移状态，不启动 Linux 机器人，也不停止 Windows。</span></div>
+<div class="license-warning neutral"><strong>控制规则</strong><span>插件安装到任何电脑都不会自动成为主人。主人 QQ、执行端权限和群配置都以本网页为准。</span></div>
 
-<div class="dashboard-columns">
-  <section class="panel">
-    <div class="section-heading"><div><h2>Linux 执行端</h2><p>当前未部署，暂不能迁移。</p></div></div>
-    <form method="post" action="/admin/deployment" class="form-stack">
-      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-      <label class="switch-row"><span><strong>预留 Linux 迁移接口</strong><small>声明接口已准备迁移；Windows 同步不受影响。</small></span><input type="checkbox" name="linux_migration_prepared" value="on" {% if runner.linux_migration_prepared %}checked{% endif %}></label>
-      <button class="button primary" type="submit">保存迁移预留状态</button>
-    </form>
-  </section>
-  <section class="panel">
-    <div class="section-heading"><div><h2>接口状态</h2><p>当前执行端和迁移状态。</p></div></div>
-    <div class="item-list">
-      <div class="list-item"><div><strong>当前执行端</strong><p>Windows（固定，当前版本不可由网页切换）</p></div><span class="pill active">{{ runner.active_runner }}</span></div>
-      <div class="list-item"><div><strong>Linux 迁移预留</strong><p>仅记录计划；不运行任何机器人进程。</p></div><span class="pill {{ 'active' if runner.linux_migration_prepared else 'expired' }}">{{ '✅️ 已开启' if runner.linux_migration_prepared else '❌️ 未开启' }}</span></div>
-      <div class="list-item"><div><strong>Linux 运行器</strong><p>尚未部署，因此无法启用执行。</p></div><span class="pill expired">未安装</span></div>
+<section class="panel">
+  <div class="section-heading"><div><h2>中心主人</h2><p>启用后，所有已允许的 Windows 执行端只认这里填写的 QQ 号。</p></div></div>
+  <form method="post" action="/admin/deployment" class="form-stack">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <input type="hidden" name="action" value="save_execution_control">
+    <label>主人 QQ 号<small>每行一个，也可以用空格或逗号分隔。</small><textarea name="owner_ids" rows="3" placeholder="2650362143">{{ execution_control.owner_ids | join('\n') }}</textarea></label>
+    <label class="switch-row"><span><strong>启用中心主人</strong><small>关闭时沿用每台电脑本地的主人配置；建议设置完成后开启。</small></span><input type="checkbox" name="enforce_owner_ids" value="on" {% if execution_control.enforce_owner_ids %}checked{% endif %}></label>
+    <label class="switch-row"><span><strong>允许新电脑接入</strong><small>允许新安装的插件同步到 Linux；仍不能改变中心主人。</small></span><input type="checkbox" name="allow_new_clients" value="on" {% if execution_control.allow_new_clients %}checked{% endif %}></label>
+    <label>允许的执行端编号<small>关闭“允许新电脑”后，只允许列出的编号运行；每行一个。</small><textarea name="allowed_client_ids" rows="3" placeholder="windows-...">{{ execution_control.allowed_client_ids | join('\n') }}</textarea></label>
+    <label>已停用的执行端编号<small>停用后该电脑不再执行插件消息，也不会继续上传或拉取群配置。</small><textarea name="blocked_client_ids" rows="3">{{ execution_control.blocked_client_ids | join('\n') }}</textarea></label>
+    <button class="button primary" type="submit">保存中心控制</button>
+  </form>
+</section>
+
+<section class="panel">
+  <div class="section-heading"><div><h2>已连接执行端</h2><p>编号由插件首次安装时生成；同一电脑重启不会改变。</p></div></div>
+  {% if execution_clients %}
+  <div class="item-list">
+    {% for client in execution_clients %}
+    <div class="list-item">
+      <div><strong>{{ client.client_id }}</strong><p>群数 {{ client.group_count }} · 最近同步 {{ client.last_seen_at or '尚未同步' }}</p></div>
+      {% if client.client_id in execution_control.blocked_client_ids %}
+      <form method="post" action="/admin/deployment" class="inline-form">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}"><input type="hidden" name="action" value="set_client_access"><input type="hidden" name="client_id" value="{{ client.client_id }}"><input type="hidden" name="client_action" value="allow"><button class="button small" type="submit">恢复运行</button>
+      </form>
+      <span class="pill expired">已停用</span>
+      {% else %}
+      <form method="post" action="/admin/deployment" class="inline-form">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}"><input type="hidden" name="action" value="set_client_access"><input type="hidden" name="client_id" value="{{ client.client_id }}"><input type="hidden" name="client_action" value="block"><button class="button danger small" type="submit">停用</button>
+      </form>
+      <span class="pill active">可运行</span>
+      {% endif %}
     </div>
-  </section>
-</div>
+    {% endfor %}
+  </div>
+  {% else %}<p class="muted">还没有 Windows 执行端完成同步。</p>{% endif %}
+</section>
 
-<section class="panel audit-panel"><div class="section-heading"><div><h2>迁移步骤</h2><p>完成部署和确认后再切换执行端。</p></div></div><ol class="compact-steps"><li>备份 Windows 的 AstrBot、NapCat 与 plugin_data。</li><li>部署 Linux 执行端并完成 QQ/NapCat 登录。</li><li>校验同步令牌和迁移接口，确认接管。</li><li>确认 Linux 正常处理群消息后，停止 Windows 执行端。</li></ol></section>
+<section class="panel audit-panel"><div class="section-heading"><div><h2>数据归属</h2><p>Linux 数据库是唯一控制中心；Windows 的本地文件只用于执行和断网保护，群授权、网页配置和运行日志会继续上传到 Linux。</p></div></div></section>
 {% endblock %}

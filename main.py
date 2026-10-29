@@ -312,7 +312,7 @@ def _compact_reply_text(text: str) -> str:
     return compact
 
 
-@register("astrbot_plugin_joker", "Joker", "SCUM 查询与 QQ 群管插件", "1.11.406")
+@register("astrbot_plugin_joker", "Joker", "SCUM 查询与 QQ 群管插件", "1.11.410")
 class MyPlugin(Star):
     _MEMBER_REFRESH_WARNING_COOLDOWN_SECONDS = 300
     _GROUP_BOT_ACTIVITY_TTL_SECONDS = 120
@@ -445,6 +445,15 @@ class MyPlugin(Star):
         return normalize_music_source_services(
             getattr(self, "music_source_services", None)
         )
+
+    def _apply_portal_execution_control(self, payload: object) -> bool:
+        """Persist the Linux-owned execution and owner policy locally."""
+        if not isinstance(payload, dict):
+            return False
+        from .qqadmin.remote_control import save_execution_control
+
+        self._portal_execution_control = save_execution_control(payload)
+        return True
 
     def _apply_portal_runtime_settings(self, payload: object) -> bool:
         """Persist Linux-owned game runtime settings received by HTTPS sync."""
@@ -3182,6 +3191,11 @@ class MyPlugin(Star):
         self.admin_groups = get_nested("basic", "admin_groups", default=[])
         self.filter_groups = get_nested("basic", "filter_groups", default=[])
         self.owner_ids = get_nested("basic", "owner_ids", default=[])
+        from .qqadmin.remote_control import load_execution_control
+
+        # Linux is the control center. This cache only preserves the last
+        # server decision across a restart; it never creates a new owner.
+        self._portal_execution_control = load_execution_control()
         self.allow_slash_prefix = get_nested("basic", "allow_slash_prefix", default=True)
         self.enable_help = get_nested("basic", "enable_help", default=True)
         self.enable_settings = get_nested("basic", "enable_settings", default=True)
@@ -4103,11 +4117,33 @@ class MyPlugin(Star):
 
     def _is_owner(self, event: AstrMessageEvent) -> bool:
         sender_id = self._get_sender_id_from_event(event)
-        return bool(sender_id) and sender_id in {
+        if not sender_id:
+            return False
+        control = getattr(self, "_portal_execution_control", {})
+        if getattr(self, "web_sync_enabled", False) and not bool(
+            control.get("client_allowed", False)
+        ):
+            return False
+        owner_ids = (
+            control.get("owner_ids", [])
+            if bool(control.get("enforce_owner_ids", False))
+            else self.owner_ids
+        )
+        return sender_id in {
             self._normalize_positive_id(owner_id)
-            for owner_id in self.owner_ids
+            for owner_id in owner_ids
             if self._normalize_positive_id(owner_id)
         }
+
+    def _portal_execution_client_allowed(self) -> bool:
+        """Return the last Linux decision for this Windows installation."""
+        if not getattr(self, "web_sync_enabled", False):
+            return True
+        return bool(
+            getattr(self, "_portal_execution_control", {}).get(
+                "client_allowed", False
+            )
+        )
 
     def _should_convert_to_image(self, event: AstrMessageEvent) -> bool:
         group_id = self._get_group_id_from_event(event)
@@ -4634,6 +4670,7 @@ class MyPlugin(Star):
             runtime_settings_callback=self._apply_portal_runtime_settings,
             portal_action_callback=self._apply_portal_member_actions,
             local_group_ids_callback=self._get_portal_sync_local_group_ids,
+            execution_control_callback=self._apply_portal_execution_control,
         )
         if not client.configured:
             self._cancel_portal_console_sync()
@@ -28692,12 +28729,23 @@ class MyPlugin(Star):
 
     # Run before every normal group handler so the authorization/power gate
     # prevents a switched-off group from executing commands or changing state.
+    @filter.event_message_type(filter.EventMessageType.ALL, priority=30000)
+    async def handle_portal_execution_gate(self, event: AstrMessageEvent) -> None:
+        """Stop every plugin event when Linux has disabled this client."""
+        if not self._portal_execution_client_allowed():
+            event.stop_event()
+            return
+
     @filter.event_message_type(filter.EventMessageType.GROUP_MESSAGE, priority=9999)
     async def handle_message(self, event: AstrMessageEvent) -> None:
         # Some OneBot adapters expose command text only in Plain components.
         # Use the same fallback for the high-priority route as for listeners.
         message = self._get_event_message_text(event)
         group_id = self._get_group_id_from_event(event)
+
+        if not self._portal_execution_client_allowed():
+            event.stop_event()
+            return
 
         # When several bot accounts serve the same group, only the configured
         # primary account may enter the normal command/reply pipeline.  The

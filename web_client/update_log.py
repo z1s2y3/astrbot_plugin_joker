@@ -10,6 +10,16 @@ from copy import deepcopy
 # remains available even on a freshly installed portal.
 UPDATE_LOG: tuple[dict[str, object], ...] = (
     {
+        "version": "1.11.410",
+        "date": "2026-10-29",
+        "title": "新增 Linux 中心控制",
+        "items": (
+            "主人 QQ、执行端接入和停用状态改由 Linux 网页统一保存。",
+            "新电脑安装插件不会自动成为主人；管理员可以查看、停用和恢复 Windows 执行端。",
+            "被停用的执行端停止处理插件消息、授权操作和群配置同步。",
+        ),
+    },
+    {
         "version": "1.11.409",
         "date": "2026-10-29",
         "title": "修复换电脑后群授权未恢复",
