@@ -161,7 +161,14 @@ SYNC_NESTED_POLICY_FIELDS: dict[str, frozenset[str]] = {
 # sync client apply the same ownership rule.
 PORTAL_COMMAND_FIELDS: dict[str, frozenset[str]] = {
     "stats": frozenset({"signin_command", "bind_command", "signin_profiles"}),
-    "scum": frozenset({"keyword_command", "online_command"}),
+    "scum": frozenset(
+        {
+            "keyword_command",
+            "online_command",
+            "allow_server_binding",
+            "allow_online_query",
+        }
+    ),
     "entertainment": frozenset(
         {
             "time_command",

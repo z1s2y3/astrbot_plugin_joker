@@ -349,7 +349,14 @@ def update_global_feature_values(feature_key: str, values: dict[str, Any]) -> di
         else:
             root[feature_key] = module
     key_map = GLOBAL_FEATURE_KEYS.get(feature_key, {})
+    group_only_keys = {
+        field.key
+        for field in FEATURE_BY_KEY[feature_key].fields
+        if field.group_only
+    }
     for key, value in values.items():
+        if key in group_only_keys:
+            continue
         module[key_map.get(key, key)] = deepcopy(value)
     save_global_config(config)
     return config

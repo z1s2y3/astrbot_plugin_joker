@@ -62,7 +62,7 @@ logger = logging.getLogger(__name__)
 # values because empty is meaningful for them (for example group notes).
 _MESSAGE_TEMPLATE_FIELDS = frozenset({
     ("audit", "approval_success_message"), ("audit", "approval_failure_message"),
-    ("audit", "rejection_success_message"),
+    ("audit", "rejection_success_message"), ("audit", "verification_timeout_message"),
     ("blacklist", "auto_kick_message"), ("blacklist", "leave_blacklist_message"),
     ("blacklist", "blacklist_success_message"), ("blacklist", "blacklist_failure_message"),
     ("blacklist", "unblacklist_success_message"), ("blacklist", "unblacklist_failure_message"),
@@ -1998,10 +1998,30 @@ def _group_command_groups(config: dict[str, Any]) -> list[dict[str, Any]]:
 
     scum = detail("scum")
     add_group("SCUM 查询", [
-        (command_display(scum.get("online_command"), "查询在线"), "直接发送", enabled("scum"), "member"),
-        (command_display(scum.get("keyword_command"), "查询"), "关键词", enabled("scum"), "member"),
-        ("/绑定id /id绑定", "服务器ID", enabled("scum"), "admin"),
-        ("/解绑", "直接发送", enabled("scum"), "admin"),
+        (
+            command_display(scum.get("online_command"), "查询在线"),
+            "直接发送",
+            enabled("scum") and bool(scum.get("allow_online_query", True)),
+            "member",
+        ),
+        (
+            command_display(scum.get("keyword_command"), "查询"),
+            "关键词",
+            enabled("scum"),
+            "owner_whitelist",
+        ),
+        (
+            "/绑定id /id绑定",
+            "服务器ID",
+            enabled("scum") and bool(scum.get("allow_server_binding", True)),
+            "admin",
+        ),
+        (
+            "/解绑",
+            "直接发送",
+            enabled("scum") and bool(scum.get("allow_server_binding", True)),
+            "admin",
+        ),
     ])
 
     add_group("群成员资料", [
@@ -2600,6 +2620,9 @@ def _feature_config_summary(feature_key: str, values: dict[str, Any]) -> str:
         return (
             f"{enabled} · /{str(values.get('keyword_command', '查询')).lstrip('/')}"
             f" · /{str(values.get('online_command', '查询在线')).lstrip('/')}"
+            f" · 普通分群：绑定{'开' if values.get('allow_server_binding', True) else '关'}"
+            f"、在线{'开' if values.get('allow_online_query', True) else '关'}"
+            " · 关键词搜索：主人/白名单"
         )
     if feature_key == "keyword_filter":
         return f"{enabled} · 动作 {values.get('filter_action', 'warn')} · 关键词 {len(values.get('filter_keywords', []) or [])} 个"

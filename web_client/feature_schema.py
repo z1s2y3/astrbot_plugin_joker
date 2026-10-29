@@ -53,8 +53,15 @@ TEMPLATE_VARIABLE_HELP = (
 )
 
 
-def b(key: str, label: str, default: bool = False, help: str = "") -> FieldSpec:
-    return FieldSpec(key, label, "bool", default, help)
+def b(
+    key: str,
+    label: str,
+    default: bool = False,
+    help: str = "",
+    *,
+    group_only: bool = False,
+) -> FieldSpec:
+    return FieldSpec(key, label, "bool", default, help, group_only=group_only)
 
 
 def i(
@@ -183,6 +190,7 @@ FEATURE_SPECS: tuple[FeatureSpec, ...] = (
                 "ID 验证会让新成员按机器人给出的 ID 完成验证；管理员审批会生成审批码；数学验证会让新成员回答算式；直接审批会在收到申请后自动同意；SteamID 查库会先验证当前服务器数据库中存在该 SteamID，成功后才批准入群并设置游戏名片。",
             ),
             i("verification_timeout", "验证或审批超时（秒）", 300, 30, 3600, "超过此时间未完成的请求会由 Windows 审核流程处理为超时。"),
+            text("verification_timeout_message", "验证超时提示", "用户 {user_name}({user_id}) 验证超时，{reason}。", TEMPLATE_VARIABLE_HELP),
             i("max_attempts", "数学验证最大尝试次数", 3, 1, 20, "仅数学验证使用；达到次数后，机器人按审核规则移出未通过成员。"),
             b("kick_on_verification_failure", "验证失败后踢出成员", False, "达到最大失败次数或验证超时后是否移出成员；默认关闭，只清理审核记录并保留成员。"),
             b("admin_bypass", "管理员/群主邀请免验证", True, "开启后，由群主或管理员邀请入群的成员不会进入邀请验证。"),
@@ -474,7 +482,7 @@ FEATURE_SPECS: tuple[FeatureSpec, ...] = (
     FeatureSpec(
         "scum",
         "SCUM 查询",
-        "配置 SCUM 服务器查询开关及群内命令名称。自定义命令会覆盖对应默认命令，恢复默认只清除命令覆盖，不删除群组或其他后台数据。",
+        "普通分群仅可绑定服务器ID并查询在线状态。关键词搜索仅机器人主人或白名单群可用。",
         (
             # Keep this enabled by default for existing groups: the Windows
             # plugin historically exposed the three query commands whenever
@@ -482,15 +490,29 @@ FEATURE_SPECS: tuple[FeatureSpec, ...] = (
             # feature per group from the portal without changing the global
             # plugin setting.
             b("enabled", "启用 SCUM 查询", True),
+            b(
+                "allow_server_binding",
+                "允许绑定服务器ID",
+                True,
+                "关闭后本群不能绑定或解绑服务器ID。绑定仍要求群管理权限。",
+                group_only=True,
+            ),
+            b(
+                "allow_online_query",
+                "允许查询在线状态",
+                True,
+                "开启后本群成员可使用在线查询指令；需先绑定服务器ID。",
+                group_only=True,
+            ),
             choice(
                 "permission_mode",
                 "权限模式",
                 "read_only",
                 (("read_only", "只读"), ("full_access", "完全访问")),
-                "只读时仅允许查看 SCUM 查询；完全访问时群主和管理员也可以修改服务器绑定。",
+                "完全访问时群主和管理员可绑定服务器；只读时仅机器人主人可绑定。",
             ),
-            s("keyword_command", "关键词查询命令", "查询", "默认一个命令；需要多个命令时用 | 分隔，例如 查询|查服|查ID；不带斜杠和空格。首个命令用于帮助展示。", 256),
-            s("online_command", "在线查询命令", "查询在线", "默认一个命令；需要多个命令时用 | 分隔，例如 查询在线|在线；不带斜杠和空格。首个命令用于帮助展示。", 256),
+            s("keyword_command", "关键词查询命令", "查询", "仅机器人主人或白名单群可用；不带斜杠和空格。", 256),
+            s("online_command", "在线查询命令", "查询在线", "普通分群可用；需先绑定服务器ID。不带斜杠和空格。", 256),
         ),
     ),
     FeatureSpec(

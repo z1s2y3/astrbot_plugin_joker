@@ -69,6 +69,7 @@ PERMISSION_LABELS = {
     "member": "所有成员",
     "admin": "群管理员/群主",
     "owner": "群主/机器人主人",
+    "owner_whitelist": "机器人主人/白名单群",
     "sub_admin": "分群管理员/群管理员",
 }
 

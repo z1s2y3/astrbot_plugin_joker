@@ -299,7 +299,59 @@ def _extract_history_messages(payload: object) -> list[dict]:
             messages = data
         else:
             messages = getattr(payload, "messages", [])
-    return [item for item in messages if isinstance(item, dict)] if isinstance(messages, (list, tuple)) else []
+    if not isinstance(messages, (list, tuple)):
+        return []
+
+    normalized: list[dict] = []
+    for item in messages:
+        if not isinstance(item, dict):
+            continue
+        message = dict(item)
+        if not message.get("message_id"):
+            for key in ("messageId", "msg_id", "msgId", "id"):
+                if message.get(key) not in (None, "", 0, "0"):
+                    message["message_id"] = message[key]
+                    break
+        sender = message.get("sender")
+        if not isinstance(sender, dict):
+            sender = {}
+        else:
+            sender = dict(sender)
+        if not sender.get("user_id"):
+            for key in ("userId", "user_id", "qq", "uin", "id"):
+                if sender.get(key) not in (None, "", 0, "0"):
+                    sender["user_id"] = sender[key]
+                    break
+        if sender:
+            message["sender"] = sender
+        normalized.append(message)
+    return normalized
+
+
+def _history_sender_id(message: dict) -> str:
+    """Read a sender QQ ID from standard and NapCat history shapes."""
+    sender = message.get("sender", {}) if isinstance(message, dict) else {}
+    if isinstance(sender, dict):
+        for key in ("user_id", "userId", "qq", "uin", "id"):
+            value = sender.get(key)
+            if value not in (None, "", 0, "0"):
+                return str(value)
+    for key in ("user_id", "userId", "qq", "uin"):
+        value = message.get(key) if isinstance(message, dict) else None
+        if value not in (None, "", 0, "0"):
+            return str(value)
+    return ""
+
+
+def _history_message_id(message: dict) -> object:
+    """Read the deletable message ID without confusing it with message_seq."""
+    if not isinstance(message, dict):
+        return None
+    for key in ("message_id", "messageId", "msg_id", "msgId", "id"):
+        value = message.get(key)
+        if value not in (None, "", 0, "0"):
+            return value
+    return None
 
 
 def get_recall_member_scope(group_id: str) -> str:
@@ -1247,12 +1299,7 @@ async def recall_messages(
             for msg in api_messages:
                 if not isinstance(msg, dict):
                     continue
-                sender = msg.get("sender", {})
-                if isinstance(sender, dict):
-                    sender_id = str(sender.get("user_id", ""))
-                else:
-                    sender_id = str(sender) if sender else ""
-
+                sender_id = _history_sender_id(msg)
                 if sender_id in target_user_ids:
                     messages.append(msg)
 
@@ -1286,17 +1333,13 @@ async def recall_messages(
     # 过滤处理：排除管理员（如需要）
     filtered_messages = []
     for msg in messages:
-        message_id = msg.get("message_id")
+        message_id = _history_message_id(msg)
         if not message_id:
             skipped_no_message_id += 1
             continue
 
         # 获取发送者ID
-        sender = msg.get("sender", {})
-        if isinstance(sender, dict):
-            sender_id = str(sender.get("user_id", ""))
-        else:
-            sender_id = str(sender) if sender else ""
+        sender_id = _history_sender_id(msg)
 
         # 排除管理员（仅当调用方要求时）
         if exclude_admins and sender_id in admin_ids:
@@ -1349,7 +1392,7 @@ async def recall_messages(
             pass
 
     for i, msg in enumerate(filtered_messages):
-        message_id = msg.get("message_id")
+        message_id = _history_message_id(msg)
         if not message_id:
             continue
 
@@ -1360,9 +1403,7 @@ async def recall_messages(
             success += 1
             logger.debug(f"成功撤回消息: {message_id}")
             log_attempt(message_id, "成功")
-            sender = msg.get("sender", {})
-            sender = sender if isinstance(sender, dict) else {}
-            sender_id = str(sender.get("user_id", "") or "")
+            sender_id = _history_sender_id(msg)
             content = str(msg.get("raw_message", msg.get("message", "")) or "")[:500]
             log_recall(
                 group_id,
@@ -1374,9 +1415,7 @@ async def recall_messages(
             )
             try:
                 if cache_group_id and cache_settings is not None:
-                    sender = msg.get("sender", {})
-                    sender = sender if isinstance(sender, dict) else {}
-                    cached_user_id = str(sender.get("user_id", "") or "")
+                    cached_user_id = _history_sender_id(msg)
                     if cached_user_id:
                         from .message_cache import cache_onebot_message, mark_message_recalled
                         await asyncio.to_thread(

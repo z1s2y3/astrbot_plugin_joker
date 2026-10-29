@@ -8190,11 +8190,16 @@ def create_app() -> FastAPI:
         if spec is None:
             raise PortalError("未知全局功能模块")
         try:
+            current_values = get_global_feature_values(feature_key)
             values = {
-                field.key: parse_field_value(
-                    field,
-                    form.getlist(field.key) if field.kind == "multichoice" else form.get(field.key),
-                    field.key in form,
+                field.key: (
+                    current_values.get(field.key, field.default)
+                    if field.group_only
+                    else parse_field_value(
+                        field,
+                        form.getlist(field.key) if field.kind == "multichoice" else form.get(field.key),
+                        field.key in form,
+                    )
                 )
                 for field in spec.fields
             }

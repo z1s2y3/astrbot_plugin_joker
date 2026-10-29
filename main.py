@@ -309,7 +309,7 @@ def _compact_reply_text(text: str) -> str:
     return compact
 
 
-@register("astrbot_plugin_joker", "Joker", "SCUM 查询与 QQ 群管插件", "1.11.415")
+@register("astrbot_plugin_joker", "Joker", "SCUM 查询与 QQ 群管插件", "1.11.418")
 class MyPlugin(Star):
     _MEMBER_REFRESH_WARNING_COOLDOWN_SECONDS = 300
     _GROUP_BOT_ACTIVITY_TTL_SECONDS = 120
@@ -3673,7 +3673,7 @@ class MyPlugin(Star):
         self._music_share_seen: dict[str, float] = {}
         self._music_share_seen_ttl = 30.0
         
-        logger.debug("Joker 插件初始化完成，版本 1.11.415")
+        logger.debug("Joker 插件初始化完成，版本 1.11.418")
 
     @staticmethod
     def _write_json_atomic(path: str, data: dict) -> None:
@@ -8168,6 +8168,9 @@ class MyPlugin(Star):
                         )
                         continue
 
+                    verification_bot = self._verification_bot_for_pending(
+                        group_id, pending, platform_id
+                    )
                     if not should_kick_on_verification_failure(group_id):
                         logger.info(
                             "验证超时清理：已关闭失败踢出，保留成员 group=%s user=%s",
@@ -8186,15 +8189,20 @@ class MyPlugin(Star):
                         self._update_invite_status_if_enabled(
                             group_id, user_id, "rejected"
                         )
+                        await self._send_verification_timeout_notice(
+                            group_id,
+                            user_id,
+                            pending,
+                            timeout,
+                            kicked=False,
+                            bot=verification_bot,
+                        )
                         continue
                     
                     # A user may have left while the pending record was still
                     # present.  Check membership before calling the kick API;
                     # this prevents a self-leave from being reported as a bot
                     # kick and avoids noisy retcode=1200 errors.
-                    verification_bot = self._verification_bot_for_pending(
-                        group_id, pending, platform_id
-                    )
                     member_presence = await self._group_member_presence(
                         group_id,
                         user_id,
@@ -8251,6 +8259,15 @@ class MyPlugin(Star):
                     
                     # 更新邀请状态为已拒绝
                     self._update_invite_status_if_enabled(group_id, user_id, "rejected")
+                    if member_presence is True:
+                        await self._send_verification_timeout_notice(
+                            group_id,
+                            user_id,
+                            pending,
+                            timeout,
+                            kicked=True,
+                            bot=verification_bot,
+                        )
                     logger.debug(f"更新邀请状态: user_id={user_id}, group_id={group_id}, status=rejected")
                     
                     logger.debug(f"验证超时踢出用户: user_id={user_id}, group_id={group_id}")
@@ -8268,6 +8285,71 @@ class MyPlugin(Star):
                 expired_keys = [k for k, v in self._recently_kicked.items() if now - v > 300]
                 for k in expired_keys:
                     del self._recently_kicked[k]
+
+    async def _send_verification_timeout_notice(
+        self,
+        group_id: str,
+        user_id: str,
+        pending: dict,
+        timeout: int,
+        *,
+        kicked: bool,
+        bot=None,
+    ) -> bool:
+        """Tell the group how a delivered verification ended."""
+        user_name = str(
+            pending.get("user_name", "") or user_id or "新成员"
+        ).strip()
+        reason = "已移出群聊" if kicked else "审核已结束，未移出群聊"
+        default = f"用户 {user_name}({user_id}) 验证超时，{reason}。"
+        message = self._group_reply_template(
+            str(group_id),
+            "audit",
+            "verification_timeout_message",
+            {
+                "user_name": user_name,
+                "member_name": user_name,
+                "user_id": user_id,
+                "qq": user_id,
+                "group_id": group_id,
+                "timeout": timeout,
+                "reason": reason,
+            },
+            default,
+        )
+        try:
+            from astrbot.core.message.components import At, Plain
+
+            chain = []
+            if str(user_id or "").isdigit():
+                chain.append(At(qq=int(user_id)))
+                chain.append(Plain(" " + message))
+            else:
+                chain.append(Plain(message))
+            message_id = await self._send_group_msg_with_id(
+                group_id,
+                chain,
+                context=self.context,
+                auto_recall=False,
+                bot=bot,
+            )
+            if message_id:
+                logger.info(
+                    "验证超时提示已发送 group=%s user=%s kicked=%s message_id=%s",
+                    group_id,
+                    user_id,
+                    kicked,
+                    message_id,
+                )
+                return True
+        except Exception as exc:
+            logger.warning(
+                "验证超时提示发送失败 group=%s user=%s reason=%s",
+                group_id,
+                user_id,
+                self._onebot_failure_detail(exc) or type(exc).__name__,
+            )
+        return False
 
     def _log_send(self, group_id_or_event, message, source: str = "") -> None:
         """Write one redacted CMD line only after the send path has succeeded.
@@ -11910,6 +11992,16 @@ class MyPlugin(Star):
                 yield self._yield_plain(
                     event,
                     "本群 SCUM 查询功能已停用，请在 Linux 网页分群设置中启用后再试。",
+                )
+            elif route_kind == "online_disabled":
+                yield self._yield_plain(
+                    event,
+                    "本群在线查询已关闭，请在分群 SCUM 设置中开启。",
+                )
+            elif route_kind == "keyword_restricted":
+                yield self._yield_plain(
+                    event,
+                    "本群只允许绑定服务器ID并查询在线状态；关键词搜索仅机器人主人或白名单群可用。",
                 )
             elif route_kind == "keyword_missing_separator":
                 yield self._yield_plain(
@@ -16295,6 +16387,8 @@ class MyPlugin(Star):
                         continue
                     merged[key] = value
         merged.setdefault("enabled", True)
+        merged.setdefault("allow_server_binding", True)
+        merged.setdefault("allow_online_query", True)
         merged["permission_mode"] = self._normalize_scum_permission_mode(
             merged.get("permission_mode"),
             self.scum_permission_mode,
@@ -16323,6 +16417,31 @@ class MyPlugin(Star):
         if isinstance(enabled, str):
             return enabled.strip().lower() not in {"", "0", "false", "off", "no"}
         return bool(enabled)
+
+    @staticmethod
+    def _scum_setting_enabled(value: object, default: bool = True) -> bool:
+        if value is None:
+            return default
+        if isinstance(value, str):
+            return value.strip().lower() not in {"", "0", "false", "off", "no"}
+        return bool(value)
+
+    def _is_scum_binding_enabled(self, event: AstrMessageEvent) -> bool:
+        config = self._get_scum_group_config(event)
+        return bool(self.enable_binding) and self._scum_setting_enabled(
+            config.get("allow_server_binding"), True
+        )
+
+    def _is_scum_online_query_enabled(self, event: AstrMessageEvent) -> bool:
+        if not self._is_scum_query_enabled(event):
+            return False
+        return self._scum_setting_enabled(
+            self._get_scum_group_config(event).get("allow_online_query"), True
+        )
+
+    def _is_scum_keyword_query_allowed(self, event: AstrMessageEvent) -> bool:
+        group_id = self._get_group_id_from_event(event)
+        return self._is_owner(event) or self._is_in_whitelist(group_id)
 
     def _is_configured_scum_command(
         self, event: AstrMessageEvent, command_key: str
@@ -16565,6 +16684,8 @@ class MyPlugin(Star):
         argument = parts[1] if len(parts) > 1 else ""
         config = self._get_scum_group_config(event)
         query_enabled = self._is_scum_query_enabled(event)
+        online_enabled = self._is_scum_online_query_enabled(event)
+        keyword_allowed = self._is_scum_keyword_query_allowed(event)
         # Check the more specific commands first if an administrator has
         # accidentally assigned duplicate names in an older snapshot.
         for kind, key in (
@@ -16576,7 +16697,16 @@ class MyPlugin(Star):
                 str(alias or "").strip().lstrip("/").casefold()
                 for alias in aliases
             }:
-                return (kind if query_enabled else "feature_disabled"), argument.strip()
+                if not query_enabled:
+                    return "feature_disabled", argument.strip()
+                if kind == "online":
+                    return (
+                        ("online" if online_enabled else "online_disabled"),
+                        argument.strip(),
+                    )
+                if not keyword_allowed:
+                    return "keyword_restricted", argument.strip()
+                return kind, argument.strip()
 
         # Chinese command names make it easy to paste the command and its
         # keyword together (for example ``/查询2关键词 855``). Treat that as
@@ -16592,6 +16722,8 @@ class MyPlugin(Star):
                 and command_folded.startswith(alias_folded)
                 and len(command_folded) > len(alias_folded)
             ):
+                if not keyword_allowed:
+                    return "keyword_restricted", ""
                 return "keyword_missing_separator", alias_text
 
         # A saved command replaces its built-in aliases.  Return a handled
@@ -16611,6 +16743,10 @@ class MyPlugin(Star):
             configured_name = config[configured_key]
             if not query_enabled:
                 return "feature_disabled", configured_name
+            if kind == "online" and not online_enabled:
+                return "online_disabled", configured_name
+            if kind == "keyword" and not keyword_allowed:
+                return "keyword_restricted", configured_name
             default_name = legacy_names[0]
             aliases = config.get(f"{configured_key}_aliases", (configured_name,))
             if default_name.casefold() not in {
@@ -16629,6 +16765,9 @@ class MyPlugin(Star):
         access_error = self._get_scum_group_access_error(event)
         if access_error:
             yield self._yield_scum_group_access_error(event, access_error)
+            return
+        if not self._is_scum_binding_enabled(event):
+            yield self._yield_plain(event, "本群已关闭服务器ID绑定，请在分群 SCUM 设置中开启。")
             return
         if not (self._is_owner(event) or await self._is_group_admin_or_owner_async(event)):
             yield self._yield_plain(event,"只有管理员或群主才能执行此操作。")
@@ -16685,6 +16824,9 @@ class MyPlugin(Star):
         if access_error:
             yield self._yield_scum_group_access_error(event, access_error)
             return
+        if not self._is_scum_binding_enabled(event):
+            yield self._yield_plain(event, "本群已关闭服务器ID绑定，请在分群 SCUM 设置中开启。")
+            return
         if not (self._is_owner(event) or await self._is_group_admin_or_owner_async(event)):
             yield self._yield_plain(event,"只有管理员或群主才能执行此操作。")
             return
@@ -16723,8 +16865,8 @@ class MyPlugin(Star):
         if not self._is_slash_prefix_allowed(event):
             event.stop_event()
             return
-        if not self._is_scum_query_enabled(event):
-            yield self._yield_plain(event, "本群 SCUM 查询功能已停用，请在 Linux 网页分群设置中启用后再试。")
+        if not self._is_scum_online_query_enabled(event):
+            yield self._yield_plain(event, "本群在线查询已关闭，请在分群 SCUM 设置中开启。")
             event.stop_event()
             return
         if not self._is_configured_scum_command(event, "online_command"):
@@ -16747,6 +16889,13 @@ class MyPlugin(Star):
             yield self._yield_plain(event, "本群 SCUM 查询功能已停用，请在 Linux 网页分群设置中启用后再试。")
             event.stop_event()
             return
+        if not self._is_scum_keyword_query_allowed(event):
+            yield self._yield_plain(
+                event,
+                "本群只允许绑定服务器ID并查询在线状态；关键词搜索仅机器人主人或白名单群可用。",
+            )
+            event.stop_event()
+            return
         if not self._is_configured_scum_command(event, "keyword_command"):
             command = self._get_scum_group_config(event)["keyword_command"]
             yield self._yield_plain(event, f"本群关键词查询指令已修改，请使用 /{command} 关键词。")
@@ -16759,6 +16908,9 @@ class MyPlugin(Star):
             event.stop_event()
 
     async def _query_online(self, event: AstrMessageEvent) -> None:
+        if not self._is_scum_online_query_enabled(event):
+            yield self._yield_plain(event, "本群在线查询已关闭，请在分群 SCUM 设置中开启。")
+            return
         access_error = self._get_scum_group_access_error(event)
         if access_error:
             yield self._yield_scum_group_access_error(event, access_error)
@@ -16825,6 +16977,15 @@ class MyPlugin(Star):
         return str(result or "Linux 查询 SCUM 未返回结果。")
 
     async def _query_keyword(self, event: AstrMessageEvent, keyword: str = "") -> None:
+        if not self._is_scum_query_enabled(event):
+            yield self._yield_plain(event, "本群 SCUM 查询功能已停用，请在 Linux 网页分群设置中启用后再试。")
+            return
+        if not self._is_scum_keyword_query_allowed(event):
+            yield self._yield_plain(
+                event,
+                "本群只允许绑定服务器ID并查询在线状态；关键词搜索仅机器人主人或白名单群可用。",
+            )
+            return
         access_error = self._get_scum_group_access_error(event)
         if access_error:
             yield self._yield_scum_group_access_error(event, access_error)
@@ -18677,6 +18838,14 @@ class MyPlugin(Star):
         except Exception:
             lottery_keyword = "抽奖"
 
+        scum_query_entries = [
+            f"{scum_command('online_command', '查询在线')}：查询在线服务器",
+        ]
+        if self._is_scum_keyword_query_allowed(event):
+            scum_query_entries.append(
+                f"{scum_command('keyword_command', '查询')} 关键词：关键词查询"
+            )
+
         sections = [
             (
                 "SCUM查询",
@@ -18684,10 +18853,7 @@ class MyPlugin(Star):
                     ("服务器绑定", ["/绑定id 或 /id绑定 服务器ID", "/解绑"]),
                     (
                         "查询",
-                        [
-                            f"{scum_command('online_command', '查询在线')}：查询在线服务器",
-                            f"{scum_command('keyword_command', '查询')} 关键词：关键词查询",
-                        ],
+                        scum_query_entries,
                     ),
                 ],
             ),
@@ -19078,10 +19244,11 @@ class MyPlugin(Star):
             "/绑定id 或 /id绑定 服务器ID",
             "/解绑",
             online_command,
-            f"{keyword_command} 关键词",
             f"{bind_command} 17位SteamID",
             f"{unbind_command} QQ号或SteamID（管理员）",
         ]
+        if self._is_scum_keyword_query_allowed(event):
+            help_lines.insert(4, f"{keyword_command} 关键词")
         yield self._yield_plain(event, "\n".join(help_lines))
         event.stop_event()
 
@@ -28845,6 +29012,16 @@ class MyPlugin(Star):
                         event,
                         "本群 SCUM 查询功能已停用，请在 Linux 网页分群设置中启用后再试。",
                     )
+                elif route_kind == "online_disabled":
+                    yield self._yield_plain(
+                        event,
+                        "本群在线查询已关闭，请在分群 SCUM 设置中开启。",
+                    )
+                elif route_kind == "keyword_restricted":
+                    yield self._yield_plain(
+                        event,
+                        "本群只允许绑定服务器ID并查询在线状态；关键词搜索仅机器人主人或白名单群可用。",
+                    )
                 elif route_kind == "keyword_missing_separator":
                     yield self._yield_plain(
                         event,
@@ -29051,62 +29228,137 @@ class MyPlugin(Star):
             return
     
     # ==================== 禁言系统处理函数 ====================
-    def _get_at_user_id(self, event: AstrMessageEvent) -> str | None:
-        """从消息链中提取 @ 用户ID（优先使用，message_str 可能不包含 @ 信息）"""
-        try:
-            from astrbot.core.message.components import At
-            components = event.get_messages() or getattr(
-                getattr(event, "message_obj", None), "message", []
+    @staticmethod
+    def _extract_mention_ids(value: object, *, _depth: int = 0) -> list[str]:
+        """Extract explicitly mentioned QQ IDs from AstrBot/OneBot message shapes."""
+        if value is None or _depth > 8:
+            return []
+
+        def normalize(candidate: object) -> str:
+            text = str(candidate or "").strip()
+            return text if text.isdigit() and text != "all" else ""
+
+        def from_text(text: object) -> list[str]:
+            source = str(text or "")
+            if not source:
+                return []
+            if source.lstrip().startswith(("{", "[")):
+                try:
+                    decoded = json.loads(source)
+                except (TypeError, ValueError, json.JSONDecodeError):
+                    decoded = None
+                if decoded is not None:
+                    return MyPlugin._extract_mention_ids(decoded, _depth=_depth + 1)
+            patterns = (
+                r"\[At:(\d+)(?:,[^\]]*)?\]",
+                r"\[(?:CQ:)?at,[^\]]*?\b(?:qq|user_id|userId|target)=(\d+)[^\]]*\]",
+                r"(?:CQ:)?at[^\n\r]*?\b(?:qq|user_id|userId|target)\s*[:=]\s*[\"']?(\d+)",
+                r"@[^\s(]*\((\d+)\)",
+                r"@(?P<plain>\d{5,20})(?!\d)",
             )
-            for comp in components:
-                if isinstance(comp, At):
-                    user_id = str(getattr(comp, "qq", "") or "").strip()
-                    if user_id.isdigit() and user_id != "all":
-                        return user_id
+            found: list[str] = []
+            for pattern in patterns:
+                for match in re.finditer(pattern, source, flags=re.IGNORECASE):
+                    value = match.groupdict().get("plain") or match.group(1)
+                    normalized = normalize(value)
+                    if normalized and normalized not in found:
+                        found.append(normalized)
+            return found
+
+        if isinstance(value, str):
+            return from_text(value)
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            return []
+
+        found: list[str] = []
+
+        def add(candidate: object) -> None:
+            normalized = normalize(candidate)
+            if normalized and normalized not in found:
+                found.append(normalized)
+
+        if isinstance(value, dict):
+            segment_type = str(value.get("type", value.get("segment_type", "")) or "").lower()
+            if segment_type == "at":
+                data = value.get("data", value)
+                if isinstance(data, dict):
+                    for key in ("qq", "user_id", "userId", "target", "id"):
+                        add(data.get(key))
+                else:
+                    add(data)
+            for key in ("raw_message", "rawMessage", "message", "messages", "segments", "chain", "nodes"):
+                if key in value:
+                    for item in MyPlugin._extract_mention_ids(value.get(key), _depth=_depth + 1):
+                        add(item)
+            data = value.get("data")
+            if isinstance(data, (dict, list, tuple)) and segment_type != "at":
+                for item in MyPlugin._extract_mention_ids(data, _depth=_depth + 1):
+                    add(item)
+            return found
+
+        if isinstance(value, (list, tuple, set)):
+            for item in value:
+                for mention_id in MyPlugin._extract_mention_ids(item, _depth=_depth + 1):
+                    add(mention_id)
+            return found
+
+        object_type = str(getattr(value, "type", "") or getattr(value, "segment_type", "") or "").lower()
+        class_name = type(value).__name__.lower()
+        if object_type == "at" or class_name == "at":
+            for key in ("qq", "user_id", "userId", "target", "id"):
+                add(getattr(value, key, None))
+            data = getattr(value, "data", None)
+            if isinstance(data, dict):
+                for key in ("qq", "user_id", "userId", "target", "id"):
+                    add(data.get(key))
+
+        for key in ("raw_message", "rawMessage", "message", "messages", "segments", "chain", "nodes"):
+            try:
+                nested = getattr(value, key, None)
+            except Exception:
+                nested = None
+            if nested is None or nested is value:
+                continue
+            for mention_id in MyPlugin._extract_mention_ids(nested, _depth=_depth + 1):
+                add(mention_id)
+        return found
+
+    @staticmethod
+    def _get_mention_sources(event: AstrMessageEvent) -> tuple[object, ...]:
+        """Return only message-bearing event fields to avoid treating sender IDs as mentions."""
+        message_obj = getattr(event, "message_obj", None)
+        sources: list[object] = []
+        try:
+            sources.append(event.get_messages())
         except Exception:
             pass
-        # Some aiocqhttp/NapCat payloads expose only the rendered text
-        # (``[At:123]`` or CQ code) and omit the structured At component.
-        # Keep explicit mention parsing as a fallback so commands such as
-        # ``/撤回 [At:3448876177] 10`` still target the mentioned user.
-        message = str(getattr(event, "message_str", "") or "")
-        mention = re.search(
-            r"\[At:(\d+)\]|\[CQ:at,qq=(\d+)\]|@[^\s(]*\((\d+)\)|@(\d+)",
-            message,
-            flags=re.IGNORECASE,
-        )
-        if mention:
-            return next((value for value in mention.groups() if value), None)
-        return None
+        for source in (
+            getattr(message_obj, "message", None),
+            getattr(message_obj, "raw_message", None),
+            getattr(message_obj, "raw_event", None),
+            getattr(event, "message", None),
+            getattr(event, "raw_message", None),
+            getattr(event, "raw_event", None),
+            getattr(event, "data", None),
+            getattr(event, "message_str", None),
+        ):
+            if source is not None:
+                sources.append(source)
+        return tuple(sources)
+
+    def _get_at_user_id(self, event: AstrMessageEvent) -> str | None:
+        """从消息链中提取 @ 用户ID（优先使用，message_str 可能不包含 @ 信息）"""
+        values = self._get_at_user_ids(event)
+        return values[0] if values else None
 
     @staticmethod
     def _get_at_user_ids(event: AstrMessageEvent) -> tuple[str, ...]:
         """Return every explicitly mentioned QQ ID in a message, once each."""
         result: list[str] = []
-        try:
-            from astrbot.core.message.components import At
-            components = event.get_messages() or getattr(
-                getattr(event, "message_obj", None), "message", []
-            )
-            for component in components:
-                if not isinstance(component, At):
-                    continue
-                user_id = str(getattr(component, "qq", "") or "").strip()
-                if user_id.isdigit() and user_id != "all" and user_id not in result:
+        for source in MyPlugin._get_mention_sources(event):
+            for user_id in MyPlugin._extract_mention_ids(source):
+                if user_id not in result:
                     result.append(user_id)
-        except Exception:
-            components = ()
-        # Text fallback is needed for adapters that flatten At into the
-        # ``message_str`` projection instead of exposing an At component.
-        message = str(getattr(event, "message_str", "") or "")
-        for match in re.finditer(
-            r"\[At:(\d+)\]|\[CQ:at,qq=(\d+)\]|@[^\s(]*\((\d+)\)|@(\d+)",
-            message,
-            flags=re.IGNORECASE,
-        ):
-            user_id = next((value for value in match.groups() if value), "")
-            if user_id.isdigit() and user_id != "all" and user_id not in result:
-                result.append(user_id)
         return tuple(result)
 
     @staticmethod

@@ -377,6 +377,7 @@ def get_default_feature_config():
             "kick_on_verification_failure": False,
             "admin_bypass": True,
             "enable_invite_audit": True,
+            "verification_timeout_message": "用户 {user_name}({user_id}) 验证超时，{reason}。",
             "approval_success_message": "已批准用户 {user_name}({user_id}) 入群。",
             "approval_failure_message": "审核失败：{reason}",
             "rejection_success_message": "已拒绝用户 {user_name}({user_id}) 的入群申请。理由：{reason}",
@@ -516,6 +517,8 @@ def get_default_feature_config():
         # portal to override each name independently per group.
         "scum": {
             "enabled": True,
+            "allow_server_binding": True,
+            "allow_online_query": True,
             "permission_mode": "read_only",
             "keyword_command": "查询",
             "online_command": "查询在线",
@@ -1523,6 +1526,14 @@ def clone_group_config(source_group_id: str, target_group_id: str):
 def clone_global_config_to_group(group_id: str, global_config: dict = None):
     """从全局配置克隆到指定群组（只克隆配置，保留分群数据）"""
     group_id = _normalize_group_id(group_id)
+    existing_group_config = load_group_config(group_id)
+    existing_scum = (
+        existing_group_config.get("features", {}).get("scum", {})
+        if isinstance(existing_group_config, dict)
+        and isinstance(existing_group_config.get("features"), dict)
+        and isinstance(existing_group_config.get("features", {}).get("scum"), dict)
+        else {}
+    )
     # Build the new policy first.  The existing group config is re-read under
     # the write lock below so concurrent sign-in, invite, and schedule updates
     # cannot be overwritten by a global settings sync.
@@ -1705,6 +1716,8 @@ def clone_global_config_to_group(group_id: str, global_config: dict = None):
             scum_config = {}
         config["features"]["scum"] = {
             "enabled": scum_config.get("enable_query", True),
+            "allow_server_binding": existing_scum.get("allow_server_binding", True),
+            "allow_online_query": existing_scum.get("allow_online_query", True),
             "permission_mode": scum_config.get("permission_mode", "read_only"),
             "keyword_command": scum_config.get("keyword_command", "查询"),
             "online_command": scum_config.get("online_command", "查询在线"),
@@ -1906,6 +1919,14 @@ def clear_group_data(group_id: str) -> dict:
 
 def clone_global_config_to_group_config(group_id: str, global_config: dict = None) -> dict:
     """从全局配置克隆到指定群组（返回配置对象）"""
+    existing_group_config = load_group_config(group_id)
+    existing_scum = (
+        existing_group_config.get("features", {}).get("scum", {})
+        if isinstance(existing_group_config, dict)
+        and isinstance(existing_group_config.get("features"), dict)
+        and isinstance(existing_group_config.get("features", {}).get("scum"), dict)
+        else {}
+    )
     config = {
         "group_id": group_id,
         "enabled": True,
@@ -2065,6 +2086,8 @@ def clone_global_config_to_group_config(group_id: str, global_config: dict = Non
             scum_config = {}
         config["features"]["scum"] = {
             "enabled": scum_config.get("enable_query", True),
+            "allow_server_binding": existing_scum.get("allow_server_binding", True),
+            "allow_online_query": existing_scum.get("allow_online_query", True),
             "permission_mode": scum_config.get("permission_mode", "read_only"),
             "keyword_command": scum_config.get("keyword_command", "查询"),
             "online_command": scum_config.get("online_command", "查询在线"),
