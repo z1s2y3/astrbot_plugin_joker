@@ -374,7 +374,17 @@ _SYNC_ERROR_REPEAT_LOG_SECONDS = 300
 # A complete exchange/ACK retry is safe because both endpoints are idempotent.
 # Keep the pause short enough that a browser-triggered one-group save does not
 # look stalled, while still giving a CDN/TLS socket a chance to be recreated.
-_SYNC_RETRY_DELAY_SECONDS = 0.25
+_SYNC_RETRY_DELAY_SECONDS = 0.35
+_SYNC_RETRY_ATTEMPTS = 3
+# These routes modify the same portal snapshots. Serializing them per Windows
+# client prevents a manual pull/command from racing its periodic heartbeat.
+_SERIALIZED_PORTAL_WRITE_ENDPOINTS = frozenset({
+    "/api/sync/v1/exchange",
+    "/api/sync/v1/ack",
+    "/api/sync/v1/config-pull",
+    "/api/sync/v1/member-directory",
+    "/api/sync/v1/message-cache",
+})
 _HTTP_KEEPALIVE_SECONDS = 60.0
 
 
@@ -1747,6 +1757,9 @@ class PortalSyncClient:
         # their callers wake the periodic loop instead of making a second,
         # concurrent HTTP request from the command handler.
         self._sync_requested = asyncio.Event()
+        # Keep local background sync and on-demand group actions from issuing
+        # concurrent writes to the same Linux snapshot rows.
+        self._portal_write_lock = asyncio.Lock()
         # Reply-image transfers are deliberately decoupled from the exchange
         # and ACK requests.  A large image or a temporarily slow portal must
         # never turn a normal configuration save into a reverse-proxy timeout.
@@ -2184,6 +2197,13 @@ class PortalSyncClient:
         self._last_error_log_at = 0.0
         self._suppressed_error_count = 0
 
+    def _sync_retry_delay(self, attempt: int) -> float:
+        """Return a short deterministic backoff unique to this Windows client."""
+
+        base_delay = _SYNC_RETRY_DELAY_SECONDS * (2 ** max(0, int(attempt)))
+        client_offset = (sum(ord(char) for char in self.client_id) % 7) * 0.07
+        return min(3.0, base_delay + client_offset)
+
     async def _post_json(
         self,
         endpoint: str,
@@ -2191,6 +2211,7 @@ class PortalSyncClient:
         timeout: Any,
         *,
         client_kind: str = "exchange",
+        _serialized: bool = False,
     ) -> dict[str, Any]:
         """POST one idempotent sync operation with a bounded retry.
 
@@ -2199,7 +2220,16 @@ class PortalSyncClient:
         improves flaky residential-network and reverse-proxy behaviour while
         avoiding an unbounded request storm.
         """
-        for attempt in range(2):
+        if endpoint in _SERIALIZED_PORTAL_WRITE_ENDPOINTS and not _serialized:
+            async with self._portal_write_lock:
+                return await self._post_json(
+                    endpoint,
+                    payload,
+                    timeout,
+                    client_kind=client_kind,
+                    _serialized=True,
+                )
+        for attempt in range(_SYNC_RETRY_ATTEMPTS):
             client = self._get_http_client(client_kind, timeout)
             try:
                 response = await client.post(
@@ -2221,9 +2251,18 @@ class PortalSyncClient:
                     error_code = ""
                     if isinstance(error_payload, dict):
                         error_code = str(error_payload.get("code", "")).strip().lower()
-                    if status_code >= 500 and attempt == 0:
+                    retryable_protocol = (
+                        status_code >= 500
+                        or error_code
+                        in {
+                            "sync_storage_busy",
+                            "member_directory_storage_busy",
+                            "sync_timeout",
+                        }
+                    )
+                    if retryable_protocol and attempt < _SYNC_RETRY_ATTEMPTS - 1:
                         await self._discard_http_client(client_kind, client)
-                        await asyncio.sleep(_SYNC_RETRY_DELAY_SECONDS)
+                        await asyncio.sleep(self._sync_retry_delay(attempt))
                         continue
                     if re.fullmatch(r"[a-z][a-z0-9_]{2,63}", error_code):
                         raise _PortalSyncProtocolError(error_code)
@@ -2267,7 +2306,7 @@ class PortalSyncClient:
                 error_response = getattr(exc, "response", None)
                 error_status = getattr(error_response, "status_code", None)
                 retryable_status = isinstance(error_status, int) and error_status >= 500
-                if attempt == 0 and (
+                if attempt < _SYNC_RETRY_ATTEMPTS - 1 and (
                     retryable_status
                     or self._is_retryable_transport_error(exc)
                     # HTTPX normally wraps TLS failures in TransportError;
@@ -2275,7 +2314,7 @@ class PortalSyncClient:
                     or self._exception_has_tls_signal(exc)
                 ):
                     await self._discard_http_client(client_kind, client)
-                    await asyncio.sleep(_SYNC_RETRY_DELAY_SECONDS)
+                    await asyncio.sleep(self._sync_retry_delay(attempt))
                     continue
                 raise
         raise _PortalSyncProtocolError("request_retry_exhausted")

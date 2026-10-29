@@ -172,23 +172,12 @@
   </div>
   <div class="row-actions">
     {% if not current_user.is_admin %}<a class="button secondary" href="{{ group_prefix }}/{{ group_id }}/integrations">服务器与数据库</a>{% endif %}
-  <a class="button secondary" href="{{ group_prefix }}/{{ group_id }}/official-bot">QQ 官方机器人</a>
   <a class="button {{ 'danger' if powered_on else 'primary' }}" href="#member-management" data-group-section-switch="member-management">{{ '❌️ 关机与成员操作' if powered_on else '✅️ 开机与成员操作' }}</a>
   <form method="post" action="{{ group_prefix }}/{{ group_id }}/delete" data-confirm="确定删除这个网页群组登记吗？这只会移除网页账号绑定，不会删除 Windows 授权和本地群配置。">
     <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
     <button class="button danger" type="submit">{{ '删除网页群组' if current_user.is_admin else '移除本群登记' }}</button>
   </form>
   </div>
-</section>
-
-<section class="official-bot-callout panel" aria-labelledby="official-bot-callout-title">
-  <div class="official-bot-callout-mark" aria-hidden="true">QQ</div>
-  <div class="official-bot-callout-copy">
-    <div class="eyebrow">独立项目</div>
-    <h2 id="official-bot-callout-title">QQ 官方机器人</h2>
-    <p>在这里管理本群官方机器人的功能和具体配置，保存后直接由官方机器人执行，不修改 NapCat 或 AstrBot。</p>
-  </div>
-  <a class="button primary official-bot-callout-action" href="{{ group_prefix }}/{{ group_id }}/official-bot">打开官方机器人配置</a>
 </section>
 
 <section class="sync-flow panel" aria-labelledby="sync-flow-title"

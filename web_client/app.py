@@ -164,7 +164,6 @@ from .integration_service import (
     test_integration_connection,
     validate_ftp_database_file,
 )
-from .official_bot_service import OFFICIAL_FEATURES, OfficialBotClient, OfficialBotError
 from .runner_interface import get_runner_deployment, set_linux_migration_prepared
 from .execution_control import (
     execution_control_for_client,
@@ -2145,6 +2144,9 @@ def create_app() -> FastAPI:
         "bot_type": "bot_main",
     }
     app.state.session_max_age = settings.session_max_age
+    # One queue for write-side Windows sync routes. Multiple execution clients
+    # may share a portal, but their snapshot exchanges must not overlap.
+    app.state.sync_write_lock = asyncio.Lock()
     app.state.dummy_password_hash = hash_password("dummy-password-for-timing-check")
     app.add_middleware(
         PortalSessionMiddleware,
@@ -2399,6 +2401,43 @@ def create_app() -> FastAPI:
         db.execute(select(1)).scalar_one()
         return {"status": "ok"}
 
+    async def _run_serialized_sync_write(operation, *args, timeout: float | None = None):
+        """Run one portal sync database write without overlapping another client."""
+
+        lock = app.state.sync_write_lock
+        acquired = False
+        try:
+            # Do not let a burst of booting Windows clients wait forever in a
+            # reverse proxy. The caller returns a retryable status instead.
+            await asyncio.wait_for(lock.acquire(), timeout=5.0)
+            acquired = True
+            task = asyncio.create_task(run_in_threadpool(operation, *args))
+            if timeout is None:
+                return await task
+            try:
+                # A worker thread cannot be safely interrupted halfway through
+                # a transaction. Shield it on timeout and keep the queue lock
+                # until it has actually committed or rolled back.
+                return await asyncio.wait_for(asyncio.shield(task), timeout=timeout)
+            except asyncio.TimeoutError:
+                async def release_after_completion() -> None:
+                    try:
+                        await task
+                    except Exception:
+                        logger.debug(
+                            "超时后的网页同步事务已结束", exc_info=True
+                        )
+                    finally:
+                        if lock.locked():
+                            lock.release()
+
+                asyncio.create_task(release_after_completion())
+                acquired = False
+                raise
+        finally:
+            if acquired:
+                lock.release()
+
     def _require_sync_token(request: Request) -> None:
         supplied = request.headers.get("authorization", "")
         configured_token = str(settings.sync_token or "").strip()
@@ -2603,9 +2642,16 @@ def create_app() -> FastAPI:
     async def sync_scum_query(
         group_id: str,
         request: Request,
-        db: Session = Depends(get_db),
     ):
-        """Execute a read-only SCUM query on Linux for one bound Windows bot."""
+        """Execute a read-only SCUM query for an authenticated Windows bot.
+
+        SCUM search/detail is read-only and does not expose any group-scoped
+        portal data.  A newly installed Windows client may legitimately query
+        before its first configuration heartbeat has created a group snapshot,
+        so requiring ``GroupAccess`` or a snapshot here incorrectly blocks a
+        valid card-authorized group.  The bearer token, Card Pepper proof and
+        stable client ID remain mandatory.
+        """
 
         _require_sync_token(request)
         if settings.data_mode != "remote":
@@ -2632,17 +2678,7 @@ def create_app() -> FastAPI:
             normalized_group = validate_group_id(str(group_id))
         except (TypeError, ValueError):
             return Response(status_code=404)
-        access = db.scalar(
-            select(GroupAccess).where(GroupAccess.group_id == normalized_group)
-        )
-        config_snapshot = remote_store.get_snapshot(db, normalized_group)
-        if (
-            access is None
-            or config_snapshot is None
-            or not client_id
-            or not config_snapshot.client_id
-            or not hmac.compare_digest(str(config_snapshot.client_id), client_id)
-        ):
+        if not client_id:
             return Response(status_code=404)
 
         operation = str(payload.get("operation", "") or "").strip().lower()
@@ -3575,7 +3611,7 @@ def create_app() -> FastAPI:
                 status_code=400,
             )
         try:
-            return await run_in_threadpool(
+            return await _run_serialized_sync_write(
                 _process_group_config_pull_request, group_id, client_id
             )
         except Exception:
@@ -3671,24 +3707,22 @@ def create_app() -> FastAPI:
         # synchronous transaction runs in a worker thread so MySQL locks and
         # large projections do not block unrelated browser requests.
         try:
-            return await asyncio.wait_for(
-                run_in_threadpool(
-                    _process_sync_exchange,
-                    client_id,
-                    groups,
-                    known_group_ids,
-                    console_events,
-                    apply_failures,
-                    authoritative_group_ids,
-                    runtime_summaries,
-                    config_source_complete,
-                    auth_source_complete,
-                    sync_scope_complete,
-                    settings,
-                    game_auth_source_complete,
-                    _public_request_origin(request),
-                    local_group_ids,
-                ),
+            return await _run_serialized_sync_write(
+                _process_sync_exchange,
+                client_id,
+                groups,
+                known_group_ids,
+                console_events,
+                apply_failures,
+                authoritative_group_ids,
+                runtime_summaries,
+                config_source_complete,
+                auth_source_complete,
+                sync_scope_complete,
+                settings,
+                game_auth_source_complete,
+                _public_request_origin(request),
+                local_group_ids,
                 timeout=settings.sync_exchange_timeout_seconds,
             )
         except asyncio.TimeoutError:
@@ -3713,24 +3747,22 @@ def create_app() -> FastAPI:
             # be retried independently.
             if runtime_summaries:
                 try:
-                    fallback = await asyncio.wait_for(
-                        run_in_threadpool(
-                            _process_sync_exchange,
-                            client_id,
-                            groups,
-                            known_group_ids,
-                            console_events,
-                            apply_failures,
-                            authoritative_group_ids,
-                            {},
-                            config_source_complete,
-                            auth_source_complete,
-                            sync_scope_complete,
-                            settings,
-                            game_auth_source_complete,
-                            _public_request_origin(request),
-                            local_group_ids,
-                        ),
+                    fallback = await _run_serialized_sync_write(
+                        _process_sync_exchange,
+                        client_id,
+                        groups,
+                        known_group_ids,
+                        console_events,
+                        apply_failures,
+                        authoritative_group_ids,
+                        {},
+                        config_source_complete,
+                        auth_source_complete,
+                        sync_scope_complete,
+                        settings,
+                        game_auth_source_complete,
+                        _public_request_origin(request),
+                        local_group_ids,
                         timeout=settings.sync_exchange_timeout_seconds,
                     )
                     if isinstance(fallback, dict):
@@ -3790,7 +3822,9 @@ def create_app() -> FastAPI:
         client_id, client_id_error = _extract_sync_client_id(request, payload)
         if client_id_error is not None:
             return client_id_error
-        return await run_in_threadpool(_process_sync_ack, client_id, groups)
+        return await _run_serialized_sync_write(
+            _process_sync_ack, client_id, groups
+        )
 
     @app.post("/api/sync/v1/member-directory")
     async def sync_member_directory(request: Request):
@@ -3836,7 +3870,7 @@ def create_app() -> FastAPI:
             expected_count = max(0, min(10000, int(payload.get("expected_count", 0) or 0)))
         except (TypeError, ValueError, OverflowError):
             expected_count = 0
-        result = await run_in_threadpool(
+        result = await _run_serialized_sync_write(
             _process_member_directory_upload,
             client_id,
             group_id,
@@ -5555,32 +5589,6 @@ def create_app() -> FastAPI:
                 logs=logs,
                 log_total=log_total,
                 log_pagination=log_pagination,
-            ),
-        )
-
-    @app.get("/admin/official-bot-messages", response_class=HTMLResponse)
-    def admin_official_bot_messages(request: Request, db: Session = Depends(get_db)):
-        user = _require_admin(request, db)
-        if isinstance(user, RedirectResponse):
-            return user
-        selected_group = str(request.query_params.get("group_id", "")).strip()[:32]
-        groups: list[dict] = []
-        official = {"available": False, "error": "请选择一个已绑定的官方群", "messages": [], "message_users": []}
-        try:
-            groups = _official_bot_client().list_groups()
-            if selected_group:
-                official = _load_official_bot_view(selected_group)
-        except OfficialBotError as exc:
-            official["error"] = str(exc)
-        return templates.TemplateResponse(
-            request=request,
-            name="admin_official_bot_messages.html",
-            context=_template_context(
-                request,
-                user,
-                groups=groups,
-                selected_group=selected_group,
-                official=official,
             ),
         )
 
@@ -8538,449 +8546,6 @@ def create_app() -> FastAPI:
                 **view,
             ),
         )
-
-    def _official_bot_redirect(user: User, group_id: str, fragment: str = "") -> str:
-        return f"{_group_path(user, group_id)}/official-bot{fragment}"
-
-    def _official_bot_client() -> OfficialBotClient:
-        return OfficialBotClient(
-            settings.official_bot_url,
-            settings.official_bot_token,
-            settings.official_bot_timeout_seconds,
-        )
-
-    def _empty_official_bot_view(error: str = "") -> dict:
-        return {
-            "available": False,
-            "error": error,
-            "features": list(OFFICIAL_FEATURES),
-            "config": {"features": [], "server_id": "", "auto_reply_enabled": True},
-            "admins": [],
-            "user_replies": [],
-            "schedules": [],
-            "messages": [],
-            "message_users": [],
-            "keyword_rules": [],
-        }
-
-    def _load_official_bot_view(group_id: str) -> dict:
-        try:
-            return _official_bot_client().load_group(group_id)
-        except OfficialBotError as exc:
-            return _empty_official_bot_view(str(exc))
-
-    def _official_bot_template_context(
-        request: Request,
-        user: User,
-        group_id: str,
-        access: GroupAccess,
-        official: dict,
-    ) -> dict:
-        return _template_context(
-            request,
-            user,
-            group_id=group_id,
-            group_prefix="/admin/groups" if user.is_admin else "/user/groups",
-            access=access,
-            can_edit=True,
-            edit_block_reason="",
-            official=official,
-        )
-
-    def _official_bot_feature_page(
-        group_id: str,
-        request: Request,
-        db: Session,
-        template_name: str,
-    ):
-        user = _require_user(request, db)
-        if isinstance(user, RedirectResponse):
-            return user
-        access = _owned_group_or_redirect(request, db, user, group_id)
-        if isinstance(access, RedirectResponse):
-            return access
-        official = _load_official_bot_view(group_id)
-        return templates.TemplateResponse(
-            request=request,
-            name=template_name,
-            context=_official_bot_template_context(request, user, group_id, access, official),
-        )
-
-    @app.get("/user/groups/{group_id}/official-bot", response_class=HTMLResponse)
-    @app.get("/admin/groups/{group_id}/official-bot", response_class=HTMLResponse)
-    def official_bot_group(
-        group_id: str, request: Request, db: Session = Depends(get_db)
-    ):
-        user = _require_user(request, db)
-        if isinstance(user, RedirectResponse):
-            return user
-        access = _owned_group_or_redirect(request, db, user, group_id)
-        if isinstance(access, RedirectResponse):
-            return access
-        can_edit, edit_block_reason = True, ""
-        official = _load_official_bot_view(group_id)
-        return templates.TemplateResponse(
-            request=request,
-            name="official_bot.html",
-            context=_template_context(
-                request,
-                user,
-                group_id=group_id,
-                group_prefix="/admin/groups" if user.is_admin else "/user/groups",
-                access=access,
-                can_edit=can_edit,
-                edit_block_reason=edit_block_reason,
-                official=official,
-            ),
-        )
-
-    @app.get("/user/groups/{group_id}/official-bot/features", response_class=HTMLResponse)
-    @app.get("/admin/groups/{group_id}/official-bot/features", response_class=HTMLResponse)
-    def official_bot_features(group_id: str, request: Request, db: Session = Depends(get_db)):
-        return _official_bot_feature_page(group_id, request, db, "official_bot_features.html")
-
-    @app.get("/user/groups/{group_id}/official-bot/auto-replies", response_class=HTMLResponse)
-    @app.get("/admin/groups/{group_id}/official-bot/auto-replies", response_class=HTMLResponse)
-    def official_bot_auto_replies(group_id: str, request: Request, db: Session = Depends(get_db)):
-        return _official_bot_feature_page(group_id, request, db, "official_bot_auto_replies.html")
-
-    @app.get("/user/groups/{group_id}/official-bot/blacklist", response_class=HTMLResponse)
-    @app.get("/admin/groups/{group_id}/official-bot/blacklist", response_class=HTMLResponse)
-    def official_bot_blacklist(group_id: str, request: Request, db: Session = Depends(get_db)):
-        return _official_bot_feature_page(group_id, request, db, "official_bot_blacklist.html")
-
-    @app.get("/user/groups/{group_id}/official-bot/moderation", response_class=HTMLResponse)
-    @app.get("/admin/groups/{group_id}/official-bot/moderation", response_class=HTMLResponse)
-    def official_bot_moderation(group_id: str, request: Request, db: Session = Depends(get_db)):
-        return _official_bot_feature_page(group_id, request, db, "official_bot_moderation.html")
-
-    @app.get("/user/groups/{group_id}/official-bot/keyword-mute", response_class=HTMLResponse)
-    @app.get("/admin/groups/{group_id}/official-bot/keyword-mute", response_class=HTMLResponse)
-    def official_bot_keyword_mute(group_id: str, request: Request, db: Session = Depends(get_db)):
-        return _official_bot_feature_page(group_id, request, db, "official_bot_keyword_mute.html")
-
-    @app.get("/user/groups/{group_id}/official-bot/keyword-kick", response_class=HTMLResponse)
-    @app.get("/admin/groups/{group_id}/official-bot/keyword-kick", response_class=HTMLResponse)
-    def official_bot_keyword_kick(group_id: str, request: Request, db: Session = Depends(get_db)):
-        return _official_bot_feature_page(group_id, request, db, "official_bot_keyword_kick.html")
-
-    @app.get("/user/groups/{group_id}/official-bot/keyword-blacklist", response_class=HTMLResponse)
-    @app.get("/admin/groups/{group_id}/official-bot/keyword-blacklist", response_class=HTMLResponse)
-    def official_bot_keyword_blacklist(group_id: str, request: Request, db: Session = Depends(get_db)):
-        return _official_bot_feature_page(group_id, request, db, "official_bot_keyword_blacklist.html")
-
-    @app.get("/user/groups/{group_id}/official-bot/messages", response_class=HTMLResponse)
-    @app.get("/admin/groups/{group_id}/official-bot/messages", response_class=HTMLResponse)
-    def official_bot_messages(group_id: str, request: Request, db: Session = Depends(get_db)):
-        return _official_bot_feature_page(group_id, request, db, "official_bot_messages.html")
-
-    @app.get("/user/groups/{group_id}/official-bot/schedules", response_class=HTMLResponse)
-    @app.get("/admin/groups/{group_id}/official-bot/schedules", response_class=HTMLResponse)
-    def official_bot_schedules(group_id: str, request: Request, db: Session = Depends(get_db)):
-        return _official_bot_feature_page(group_id, request, db, "official_bot_schedules.html")
-
-    @app.post("/user/groups/{group_id}/official-bot/config")
-    @app.post("/admin/groups/{group_id}/official-bot/config")
-    async def official_bot_save_config(
-        group_id: str, request: Request, db: Session = Depends(get_db)
-    ):
-        user = _require_user(request, db)
-        if isinstance(user, RedirectResponse):
-            return user
-        access = _owned_group_or_redirect(request, db, user, group_id)
-        if isinstance(access, RedirectResponse):
-            return access
-        form = await _validated_form(request)
-        try:
-            client = _official_bot_client()
-            official = await run_in_threadpool(client.load_group, group_id)
-            feature_key = str(form.get("feature_key", "")).strip()
-            current_features = {
-                item["key"]: bool(item.get("enabled"))
-                for item in official.get("config", {}).get("features", [])
-                if isinstance(item, dict) and item.get("key")
-            }
-            if feature_key:
-                if feature_key not in {item["key"] for item in OFFICIAL_FEATURES}:
-                    raise ValueError("功能名称无效")
-                current_features[feature_key] = str(form.get("enabled", "")) == "on"
-                features = current_features
-            else:
-                features = {
-                    item["key"]: str(form.get(f"feature_{item['key']}", "")) == "on"
-                    for item in OFFICIAL_FEATURES
-                }
-            await run_in_threadpool(
-                client.save_group_config,
-                official["scope_id"],
-                features=features,
-                server_id=str(
-                    form.get("server_id", official.get("config", {}).get("server_id", ""))
-                ).strip()[:128],
-                auto_reply_enabled=(
-                    str(form.get("auto_reply_enabled", "")) == "on"
-                    if "auto_reply_enabled" in form
-                    else bool(official.get("config", {}).get("auto_reply_enabled", True))
-                ),
-            )
-            add_audit_log(
-                db,
-                user,
-                group_id,
-                "official_bot_config",
-                "保存 QQ 官方机器人分群配置",
-                request,
-                {"scope_id": official["scope_id"]},
-            )
-            db.commit()
-            _flash(request, "QQ 官方机器人分群配置已保存", "success")
-        except (OfficialBotError, ValueError) as exc:
-            db.rollback()
-            _flash(request, str(exc), "error")
-        return _redirect(_official_bot_redirect(user, group_id))
-
-    async def _official_bot_save_keyword_rule(
-        group_id: str,
-        request: Request,
-        db: Session,
-        action: str,
-        fragment: str,
-    ):
-        user = _require_user(request, db)
-        if isinstance(user, RedirectResponse):
-            return user
-        access = _owned_group_or_redirect(request, db, user, group_id)
-        if isinstance(access, RedirectResponse):
-            return access
-        form = await _validated_form(request)
-        try:
-            official = await run_in_threadpool(_official_bot_client().load_group, group_id)
-            if str(form.get("action", "add")).strip().lower() == "remove":
-                rule_id = int(str(form.get("rule_id", "0")))
-                await run_in_threadpool(
-                    _official_bot_client().delete_keyword_rule,
-                    official["scope_id"],
-                    rule_id,
-                )
-            else:
-                trigger = str(form.get("trigger", "")).strip()[:128]
-                if not trigger:
-                    raise ValueError("关键词不能为空")
-                try:
-                    duration = int(str(form.get("duration_minutes", "10")))
-                except ValueError:
-                    duration = 10
-                await run_in_threadpool(
-                    _official_bot_client().save_keyword_rule,
-                    official["scope_id"],
-                    action,
-                    trigger,
-                    duration,
-                )
-            _flash(request, "关键词规则已保存", "success")
-        except (OfficialBotError, ValueError) as exc:
-            _flash(request, str(exc), "error")
-        return _redirect(_official_bot_redirect(user, group_id, fragment))
-
-    @app.post("/user/groups/{group_id}/official-bot/keyword-mute")
-    @app.post("/admin/groups/{group_id}/official-bot/keyword-mute")
-    async def official_bot_save_keyword_mute(group_id: str, request: Request, db: Session = Depends(get_db)):
-        return await _official_bot_save_keyword_rule(group_id, request, db, "mute", "#official-keyword-mute")
-
-    @app.post("/user/groups/{group_id}/official-bot/keyword-kick")
-    @app.post("/admin/groups/{group_id}/official-bot/keyword-kick")
-    async def official_bot_save_keyword_kick(group_id: str, request: Request, db: Session = Depends(get_db)):
-        return await _official_bot_save_keyword_rule(group_id, request, db, "kick", "#official-keyword-kick")
-
-    @app.post("/user/groups/{group_id}/official-bot/keyword-blacklist")
-    @app.post("/admin/groups/{group_id}/official-bot/keyword-blacklist")
-    async def official_bot_save_keyword_blacklist(group_id: str, request: Request, db: Session = Depends(get_db)):
-        return await _official_bot_save_keyword_rule(group_id, request, db, "blacklist", "#official-keyword-blacklist")
-
-    @app.post("/user/groups/{group_id}/official-bot/moderation")
-    @app.post("/admin/groups/{group_id}/official-bot/moderation")
-    async def official_bot_run_moderation(group_id: str, request: Request, db: Session = Depends(get_db)):
-        user = _require_user(request, db)
-        if isinstance(user, RedirectResponse):
-            return user
-        access = _owned_group_or_redirect(request, db, user, group_id)
-        if isinstance(access, RedirectResponse):
-            return access
-        form = await _validated_form(request)
-        try:
-            action = str(form.get("action", "")).strip().lower()
-            if action not in {"mute", "unmute", "kick", "blacklist", "recall"}:
-                raise ValueError("群管操作无效")
-            await run_in_threadpool(
-                _official_bot_client().moderation,
-                (await run_in_threadpool(_official_bot_client().load_group, group_id))["scope_id"],
-                action,
-                user_id=str(form.get("user_id", "")).strip(),
-                message_id=str(form.get("message_id", "")).strip(),
-                duration_minutes=int(str(form.get("duration_minutes", "10"))),
-            )
-            _flash(request, "群管操作已提交", "success")
-        except (OfficialBotError, ValueError) as exc:
-            _flash(request, str(exc), "error")
-        return _redirect(_official_bot_redirect(user, group_id, "#official-moderation"))
-
-    @app.post("/user/groups/{group_id}/official-bot/admins")
-    @app.post("/admin/groups/{group_id}/official-bot/admins")
-    async def official_bot_save_admin(
-        group_id: str, request: Request, db: Session = Depends(get_db)
-    ):
-        user = _require_user(request, db)
-        if isinstance(user, RedirectResponse):
-            return user
-        access = _owned_group_or_redirect(request, db, user, group_id)
-        if isinstance(access, RedirectResponse):
-            return access
-        form = await _validated_form(request)
-        try:
-            client = _official_bot_client()
-            official = await run_in_threadpool(client.load_group, group_id)
-            user_id = str(form.get("user_id", "")).strip()[:128]
-            display_name = str(form.get("display_name", "")).strip()[:128]
-            if not user_id:
-                raise ValueError("请填写用户 OpenID")
-            if str(form.get("action", "add")) == "remove":
-                await run_in_threadpool(client.delete_group_admin, official["scope_id"], user_id)
-            else:
-                await run_in_threadpool(
-                    client.save_group_admin, official["scope_id"], user_id, display_name
-                )
-            _flash(request, "分群管理员已更新", "success")
-        except (OfficialBotError, ValueError) as exc:
-            _flash(request, str(exc), "error")
-        return _redirect(_official_bot_redirect(user, group_id, "#official-admins"))
-
-    @app.post("/user/groups/{group_id}/official-bot/auto-replies")
-    @app.post("/admin/groups/{group_id}/official-bot/auto-replies")
-    async def official_bot_save_auto_reply(
-        group_id: str, request: Request, db: Session = Depends(get_db)
-    ):
-        user = _require_user(request, db)
-        if isinstance(user, RedirectResponse):
-            return user
-        access = _owned_group_or_redirect(request, db, user, group_id)
-        if isinstance(access, RedirectResponse):
-            return access
-        form = await _validated_form(request)
-        try:
-            client = _official_bot_client()
-            official = await run_in_threadpool(client.load_group, group_id)
-            trigger = str(form.get("trigger", "")).strip()[:128]
-            response = str(form.get("response", "")).strip()[:4000]
-            if not trigger:
-                raise ValueError("请填写关键词")
-            if str(form.get("action", "add")) == "remove":
-                await run_in_threadpool(client.delete_reply, official["scope_id"], trigger)
-            else:
-                if not response:
-                    raise ValueError("请填写回复内容")
-                await run_in_threadpool(
-                    client.save_reply, official["scope_id"], trigger, response
-                )
-            _flash(request, "自动回复已更新", "success")
-        except (OfficialBotError, ValueError) as exc:
-            _flash(request, str(exc), "error")
-        return _redirect(_official_bot_redirect(user, group_id, "#official-auto-replies"))
-
-    @app.post("/user/groups/{group_id}/official-bot/blacklist")
-    @app.post("/admin/groups/{group_id}/official-bot/blacklist")
-    async def official_bot_save_blacklist(
-        group_id: str, request: Request, db: Session = Depends(get_db)
-    ):
-        user = _require_user(request, db)
-        if isinstance(user, RedirectResponse):
-            return user
-        access = _owned_group_or_redirect(request, db, user, group_id)
-        if isinstance(access, RedirectResponse):
-            return access
-        form = await _validated_form(request)
-        try:
-            client = _official_bot_client()
-            official = await run_in_threadpool(client.load_group, group_id)
-            user_id = str(form.get("user_id", "")).strip()[:128]
-            reason = str(form.get("reason", "")).strip()[:500]
-            if not user_id:
-                raise ValueError("请填写用户 OpenID")
-            if str(form.get("action", "add")) == "remove":
-                await run_in_threadpool(client.delete_blacklist, official["scope_id"], user_id)
-            else:
-                await run_in_threadpool(
-                    client.save_blacklist, official["scope_id"], user_id, reason
-                )
-            _flash(request, "黑名单已更新", "success")
-        except (OfficialBotError, ValueError) as exc:
-            _flash(request, str(exc), "error")
-        return _redirect(_official_bot_redirect(user, group_id, "#official-blacklist"))
-
-    @app.post("/user/groups/{group_id}/official-bot/replies")
-    @app.post("/admin/groups/{group_id}/official-bot/replies")
-    async def official_bot_save_reply(
-        group_id: str, request: Request, db: Session = Depends(get_db)
-    ):
-        user = _require_user(request, db)
-        if isinstance(user, RedirectResponse):
-            return user
-        access = _owned_group_or_redirect(request, db, user, group_id)
-        if isinstance(access, RedirectResponse):
-            return access
-        form = await _validated_form(request)
-        try:
-            client = _official_bot_client()
-            official = await run_in_threadpool(client.load_group, group_id)
-            user_id = str(form.get("user_id", "")).strip()[:128]
-            trigger = str(form.get("trigger", "")).strip()[:128]
-            response = str(form.get("response", "")).strip()[:4000]
-            if not user_id or not trigger or not response:
-                raise ValueError("请填写用户 OpenID、关键词和回复内容")
-            if str(form.get("action", "add")) == "remove":
-                await run_in_threadpool(
-                    client.delete_user_reply, official["scope_id"], user_id, trigger
-                )
-            else:
-                await run_in_threadpool(
-                    client.save_user_reply, official["scope_id"], user_id, trigger, response
-                )
-            _flash(request, "用户专属回复已更新", "success")
-        except (OfficialBotError, ValueError) as exc:
-            _flash(request, str(exc), "error")
-        return _redirect(_official_bot_redirect(user, group_id, "#official-replies"))
-
-    @app.post("/user/groups/{group_id}/official-bot/schedules")
-    @app.post("/admin/groups/{group_id}/official-bot/schedules")
-    async def official_bot_save_schedule(
-        group_id: str, request: Request, db: Session = Depends(get_db)
-    ):
-        user = _require_user(request, db)
-        if isinstance(user, RedirectResponse):
-            return user
-        access = _owned_group_or_redirect(request, db, user, group_id)
-        if isinstance(access, RedirectResponse):
-            return access
-        form = await _validated_form(request)
-        try:
-            client = _official_bot_client()
-            official = await run_in_threadpool(client.load_group, group_id)
-            interval = int(str(form.get("interval_minutes", "0")))
-            content = str(form.get("content", "")).strip()[:4000]
-            if not 1 <= interval <= 525600 or not content:
-                raise ValueError("间隔需为 1 到 525600 分钟，且消息不能为空")
-            if str(form.get("action", "add")) == "remove":
-                schedule_id = int(str(form.get("schedule_id", "0")))
-                await run_in_threadpool(
-                    client.delete_schedule, official["scope_id"], schedule_id
-                )
-            else:
-                await run_in_threadpool(
-                    client.save_schedule, official["scope_id"], interval, content
-                )
-            _flash(request, "定时消息已更新", "success")
-        except (OfficialBotError, ValueError) as exc:
-            _flash(request, str(exc), "error")
-        return _redirect(_official_bot_redirect(user, group_id, "#official-schedules"))
 
     @app.post("/user/groups/{group_id}/clone")
     @app.post("/admin/groups/{group_id}/clone")

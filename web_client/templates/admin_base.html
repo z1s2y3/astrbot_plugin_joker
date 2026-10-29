@@ -46,7 +46,6 @@
           <a class="sidebar-link{% if request.url.path == '/admin/users' or request.url.path.startswith('/admin/users/') %} active{% endif %}" href="/admin/users">用户管理</a>
           <a class="sidebar-link{% if request.url.path == '/admin/groups' or request.url.path.startswith('/admin/groups/') %} active{% endif %}" href="/admin/groups">群管分群</a>
           <a class="sidebar-link{% if request.url.path == '/admin/logs' %} active{% endif %}" href="/admin/logs">群管日志</a>
-          <a class="sidebar-link{% if request.url.path == '/admin/official-bot-messages' %} active{% endif %}" href="/admin/official-bot-messages">官方机器人消息</a>
         </nav>
       </section>
       {% block sidebar_extra %}{% endblock %}
