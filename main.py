@@ -24358,12 +24358,25 @@ class MyPlugin(Star):
                     "sync_token_invalid": "网页同步令牌不一致，请检查 Windows 与 Linux 配置。",
                     "card_pepper_mismatch": "Card Pepper 不一致，请检查 Windows 与 Linux 配置。",
                     "sync_storage_busy": "网页数据库繁忙，请稍后重新拉取。",
+                    "config_pull_endpoint_missing": (
+                        "Linux 网页端缺少手动拉取接口（HTTP 404），网页项目版本过旧；"
+                        "请更新 Linux 网页项目并重启网页服务，Windows 不需要重新授权。"
+                    ),
+                    "http_status_404": (
+                        "网页同步接口不存在（HTTP 404），请更新 Linux 网页项目并重启网页服务。"
+                    ),
+                    "request_compatibility_error": (
+                        "Windows 当前 HTTP 请求库与网页同步接口不兼容，请更新插件后重启 AstrBot。"
+                    ),
                 }
+                detail = str(getattr(exc, "detail", "") or "").strip()[:160]
                 logger.warning(
-                    "手动拉取网页群配置失败 group=%s error_type=%s code=%s",
+                    "手动拉取网页群配置失败 group=%s error_type=%s code=%s detail=%s",
                     group_id,
                     type(exc).__name__,
                     code or "unknown",
+                    detail or "-",
+                    exc_info=not bool(code),
                 )
                 await send_status(
                     messages.get(code, "拉取请求失败，请检查 /网页绑定状态 后重试。")

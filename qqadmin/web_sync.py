@@ -295,6 +295,14 @@ _SYNC_ERROR_MESSAGES = {
     "sync_token_invalid": "同步令牌被网页服务器拒绝，请核对 Windows 插件与服务器的同步令牌。",
     "remote_mode_disabled": "网页服务器未启用远程同步模式，请检查 Linux 网页配置。",
     "card_pepper_mismatch": "Card Pepper 与网页服务器不一致，请核对两端同步配置。",
+    "config_pull_endpoint_missing": (
+        "Linux 网页端缺少手动拉取接口（HTTP 404），网页项目版本过旧；"
+        "请更新 Linux 网页项目并重启网页服务，Windows 不需要重新授权。"
+    ),
+    "http_status_404": "网页同步接口不存在（HTTP 404），请更新 Linux 网页项目并重启网页服务。",
+    "request_compatibility_error": (
+        "Windows 当前 HTTP 请求库与网页同步接口不兼容，请更新插件后重启 AstrBot。"
+    ),
     "invalid_json_response": (
         "网页同步接口返回无效数据，请检查 Linux 网页服务版本、反向代理和响应内容。"
     ),
@@ -2200,33 +2208,33 @@ class PortalSyncClient:
                     # redirect can indicate a domain/CDN misconfiguration;
                     # following it could send the bearer token elsewhere.
                     raise _PortalSyncProtocolError("unexpected_redirect")
-                if status_code in {401, 409}:
+                if isinstance(status_code, int) and status_code >= 400:
                     try:
                         error_payload = response.json()
                     except Exception:
                         error_payload = None
+                    error_code = ""
                     if isinstance(error_payload, dict):
-                        code = str(error_payload.get("code", "")).strip().lower()
-                        if code in {
-                            "sync_token_invalid",
-                            "card_pepper_mismatch",
-                            "remote_mode_disabled",
-                        }:
-                            raise _PortalSyncProtocolError(code)
-                if isinstance(status_code, int) and status_code >= 500:
-                    if attempt == 0:
+                        error_code = str(error_payload.get("code", "")).strip().lower()
+                    if status_code >= 500 and attempt == 0:
                         await self._discard_http_client(client_kind, client)
                         await asyncio.sleep(_SYNC_RETRY_DELAY_SECONDS)
                         continue
-                    try:
-                        error_payload = response.json()
-                    except Exception:
-                        error_payload = None
-                    if isinstance(error_payload, dict):
-                        error_code = str(error_payload.get("code", "")).strip().lower()
-                        if re.fullmatch(r"[a-z][a-z0-9_]{2,63}", error_code):
-                            raise _PortalSyncProtocolError(error_code)
-                response.raise_for_status()
+                    if re.fullmatch(r"[a-z][a-z0-9_]{2,63}", error_code):
+                        raise _PortalSyncProtocolError(error_code)
+                    if (
+                        endpoint == "/api/sync/v1/config-pull"
+                        and status_code == 404
+                    ):
+                        raise _PortalSyncProtocolError("config_pull_endpoint_missing")
+                    # Convert HTTP failures to stable protocol codes instead
+                    # of calling raise_for_status(). Older HTTPX/adapter
+                    # combinations can raise a secondary TypeError when a
+                    # response has no request metadata, hiding the real
+                    # Linux endpoint/version problem.
+                    raise _PortalSyncProtocolError(
+                        f"http_status_{status_code}"
+                    )
                 try:
                     result = response.json()
                 except (TypeError, ValueError, UnicodeDecodeError) as exc:
@@ -2238,6 +2246,18 @@ class PortalSyncClient:
                 return result
             except _PortalSyncProtocolError:
                 raise
+            except TypeError as exc:
+                # Keep the user-facing error actionable when an older HTTPX
+                # or adapter raises a raw TypeError before a response is
+                # decoded. The traceback remains available in debug logs.
+                logger.debug(
+                    "网页同步请求出现 HTTP 客户端兼容性异常 endpoint=%s",
+                    endpoint,
+                    exc_info=True,
+                )
+                raise _PortalSyncProtocolError(
+                    "request_compatibility_error"
+                ) from exc
             except Exception as exc:
                 error_response = getattr(exc, "response", None)
                 error_status = getattr(error_response, "status_code", None)
