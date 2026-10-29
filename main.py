@@ -24307,77 +24307,85 @@ class MyPlugin(Star):
         event.stop_event()
         yield self._yield_plain(event, self._portal_binding_status_text())
 
-    async def _handle_portal_group_config_pull(self, event: AstrMessageEvent):
-        if not self._is_owner(event):
-            event.stop_event()
-            yield self._yield_plain(event, "仅机器人主人可以执行此操作。")
-            return
+    async def _handle_portal_group_config_pull(self, event: AstrMessageEvent) -> None:
+        async def send_status(text: str) -> None:
+            try:
+                await self._send_plain(event, text)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                logger.warning(
+                    "发送网页群配置拉取状态失败 error_type=%s",
+                    type(exc).__name__,
+                )
+
         try:
-            event.set_extra("_joker_primary_bot_allowed", True)
-        except Exception:
-            pass
-        event.stop_event()
-        group_id = str(self._get_group_id_from_event(event) or "").strip()
-        if not group_id:
-            yield self._yield_plain(event, "请在需要拉取配置的群内使用此指令。")
-            return
-        self._reload_plugin_config()
-        client = getattr(self, "_portal_sync_client", None)
-        if client is None or not getattr(client, "configured", False):
-            yield self._yield_plain(
-                event,
-                "网页同步尚未连接。请先检查网页地址、同步令牌和 Card Pepper。",
-            )
-            return
-        logger.info(
-            "收到主人手动拉取网页群配置指令 group=%s sender=%s account=%s",
-            group_id,
-            self._get_sender_id_from_event(event) or "unknown",
-            self._get_event_self_id(event) or "unknown",
-        )
-        yield self._yield_plain(event, "已收到，正在向网页服务器请求本群配置。")
-        try:
-            result = await client.request_web_group_config_pull(group_id)
-        except asyncio.CancelledError:
-            raise
-        except Exception as exc:
-            code = str(getattr(exc, "code", "") or "")
-            messages = {
-                "group_not_bound": "网页端尚未绑定当前群，请先在 Linux 网页完成该群授权绑定。",
-                "web_config_missing": "网页端没有找到当前群的配置，请先在 Linux 网页确认该群配置已保存。",
-                "remote_mode_disabled": "Linux 网页尚未开启远程同步。",
-                "sync_token_invalid": "网页同步令牌不一致，请检查 Windows 与 Linux 配置。",
-                "card_pepper_mismatch": "Card Pepper 不一致，请检查 Windows 与 Linux 配置。",
-                "sync_storage_busy": "网页数据库繁忙，请稍后重新拉取。",
-            }
-            logger.warning(
-                "手动拉取网页群配置失败 group=%s error_type=%s code=%s",
+            if not self._is_owner(event):
+                await send_status("仅机器人主人可以执行此操作。")
+                return
+            try:
+                event.set_extra("_joker_primary_bot_allowed", True)
+            except Exception:
+                pass
+            group_id = str(self._get_group_id_from_event(event) or "").strip()
+            if not group_id:
+                await send_status("请在需要拉取配置的群内使用此指令。")
+                return
+            self._reload_plugin_config()
+            client = getattr(self, "_portal_sync_client", None)
+            if client is None or not getattr(client, "configured", False):
+                await send_status(
+                    "网页同步尚未连接。请先检查网页地址、同步令牌和 Card Pepper。"
+                )
+                return
+            logger.info(
+                "收到主人手动拉取网页群配置指令 group=%s sender=%s account=%s",
                 group_id,
-                type(exc).__name__,
-                code or "unknown",
+                self._get_sender_id_from_event(event) or "unknown",
+                self._get_event_self_id(event) or "unknown",
             )
-            yield self._yield_plain(
-                event,
-                messages.get(code, "拉取请求失败，请检查 /网页绑定状态 后重试。"),
+            await send_status("已收到，正在向网页服务器请求本群配置。")
+            try:
+                result = await client.request_web_group_config_pull(group_id)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                code = str(getattr(exc, "code", "") or "")
+                messages = {
+                    "group_not_bound": "网页端尚未绑定当前群，请先在 Linux 网页完成该群授权绑定。",
+                    "web_config_missing": "网页端没有找到当前群的配置，请先在 Linux 网页确认该群配置已保存。",
+                    "remote_mode_disabled": "Linux 网页尚未开启远程同步。",
+                    "sync_token_invalid": "网页同步令牌不一致，请检查 Windows 与 Linux 配置。",
+                    "card_pepper_mismatch": "Card Pepper 不一致，请检查 Windows 与 Linux 配置。",
+                    "sync_storage_busy": "网页数据库繁忙，请稍后重新拉取。",
+                }
+                logger.warning(
+                    "手动拉取网页群配置失败 group=%s error_type=%s code=%s",
+                    group_id,
+                    type(exc).__name__,
+                    code or "unknown",
+                )
+                await send_status(
+                    messages.get(code, "拉取请求失败，请检查 /网页绑定状态 后重试。")
+                )
+                return
+            revision = result.get("revision", "未知")
+            suffix = "已在等待队列中" if result.get("already_pending") else "已提交"
+            logger.info(
+                "Windows 手动请求拉取网页群配置 group=%s revision=%s",
+                group_id,
+                revision,
             )
-            return
-        revision = result.get("revision", "未知")
-        suffix = "已在等待队列中" if result.get("already_pending") else "已提交"
-        logger.info(
-            "Windows 手动请求拉取网页群配置 group=%s revision=%s",
-            group_id,
-            revision,
-        )
-        yield self._yield_plain(
-            event,
-            f"已请求从 Linux 网页拉取本群配置，版本 {revision}，{suffix}。"
-            "拉取并保存完成后，控制台会显示“网页配置同步完成”。",
-        )
+            await send_status(
+                f"已请求从 Linux 网页拉取本群配置，版本 {revision}，{suffix}。"
+                "配置应用完成后，控制台会显示“网页配置同步完成”。"
+            )
+        finally:
+            event.stop_event()
 
     @filter.command("拉取网页群配置", alias={"拉取Linux群配置", "手动拉取群配置"})
     async def pull_portal_group_config_command(self, event: AstrMessageEvent) -> None:
-        async for result in self._handle_portal_group_config_pull(event):
-            yield result
+        await self._handle_portal_group_config_pull(event)
 
     @filter.event_message_type(filter.EventMessageType.GROUP_MESSAGE, priority=20001)
     async def handle_portal_group_config_pull_early(self, event: AstrMessageEvent) -> None:
@@ -24385,8 +24393,7 @@ class MyPlugin(Star):
         command = message.lstrip("/").strip()
         if command not in {"拉取网页群配置", "拉取Linux群配置", "手动拉取群配置"}:
             return
-        async for result in self._handle_portal_group_config_pull(event):
-            yield result
+        await self._handle_portal_group_config_pull(event)
 
     @filter.command("测试网页连接", alias={"测试网页绑定", "测试网页同步"})
     async def probe_portal_binding_command(self, event: AstrMessageEvent) -> None:
