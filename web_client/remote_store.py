@@ -588,6 +588,24 @@ def _normalized_auth_state(value: Any) -> str:
     return state if state in AUTH_STATES else "missing"
 
 
+def _snapshot_auth_payload(snapshot: GroupConfigSnapshot) -> dict[str, Any]:
+    """Return the group authorization projection for a Windows client pull."""
+    state = _normalized_auth_state(getattr(snapshot, "auth_state", "missing"))
+    expire = _safe_bigint(getattr(snapshot, "auth_expire", 0), 0)
+    fingerprint = str(getattr(snapshot, "auth_card_fingerprint", "") or "").strip().lower()
+    if not AUTH_CARD_FINGERPRINT_RE.fullmatch(fingerprint):
+        fingerprint = ""
+    return {
+        "state": state,
+        "expire": expire,
+        "expire_text": str(getattr(snapshot, "auth_expire_text", "无授权记录") or "无授权记录")[:64],
+        "card_fingerprint": fingerprint,
+        "card_mask": str(getattr(snapshot, "auth_card_mask", "") or "")[:64],
+        "activated_at": _safe_bigint(getattr(snapshot, "auth_activated_at", 0), 0),
+        "user_id": str(getattr(snapshot, "auth_user_id", "") or "")[:32],
+    }
+
+
 def _safe_runtime_summary(value: Any) -> dict[str, Any]:
     """Validate the bounded, read-only runtime data sent by Windows.
 
@@ -3269,15 +3287,16 @@ def apply_bot_exchange(
                         else "synced"
                     )
                     snapshot.sync_error = ""
-                if (
-                    state.pull_requested
-                    and _safe_bigint(state.applied_revision) < snapshot.revision
+                if state.pull_requested and (
+                    _safe_bigint(state.applied_revision) < snapshot.revision
+                    or not auth_source_complete
                 ):
                     changes.append(
                         {
                             "group_id": snapshot.group_id,
                             "revision": snapshot.revision,
                             "config": _client_config(snapshot.config_json),
+                            "auth": _snapshot_auth_payload(snapshot),
                             "manual_pull": True,
                             **change_metadata(snapshot),
                         }
@@ -3304,6 +3323,7 @@ def apply_bot_exchange(
                         "group_id": snapshot.group_id,
                         "revision": snapshot.revision,
                         "config": _client_config(snapshot.config_json),
+                        "auth": _snapshot_auth_payload(snapshot),
                         **change_metadata(snapshot),
                     }
                 )
@@ -3439,7 +3459,9 @@ def apply_bot_exchange(
                 group_id,
                 item.get("game_auth"),
             )
-        elif has_config and not auth_source_complete:
+        elif has_config and not auth_source_complete and not (
+            is_portal_group and state is not None and state.pull_requested
+        ):
             # Do not continue trusting a previously active card while its
             # local source is unreadable.  The fingerprint remains only for a
             # useful diagnostic; ``unverified`` blocks login and all writes

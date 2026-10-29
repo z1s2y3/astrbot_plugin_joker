@@ -10,6 +10,16 @@ from copy import deepcopy
 # remains available even on a freshly installed portal.
 UPDATE_LOG: tuple[dict[str, object], ...] = (
     {
+        "version": "1.11.409",
+        "date": "2026-10-29",
+        "title": "修复换电脑后群授权未恢复",
+        "items": (
+            "手动拉取网页群配置时同时恢复当前群授权状态和到期时间。",
+            "授权仍绑定群组，不绑定 Windows 电脑或登录账号。",
+            "Windows 只保存不可逆授权指纹，不生成可兑换其他群组的卡密。",
+        ),
+    },
+    {
         "version": "1.11.408",
         "date": "2026-10-29",
         "title": "修复按群手动拉取网页配置",

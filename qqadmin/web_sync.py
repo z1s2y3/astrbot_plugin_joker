@@ -653,6 +653,11 @@ def _authorization_payload_from_info(auth_info: object, card_pepper: str = "") -
             if len(activated_card) <= 12
             else activated_card[:7] + "****" + activated_card[-5:]
         )
+    stored_fingerprint = str(info.get("card_fingerprint", "") or "").strip().lower()
+    if not re.fullmatch(r"[0-9a-f]{64}", stored_fingerprint):
+        stored_fingerprint = ""
+    if stored_fingerprint and not card_mask:
+        card_mask = str(info.get("card_mask", "") or "").strip()[:64]
     try:
         activated_at = int(info.get("activated_at", 0) or 0)
     except (TypeError, ValueError, OverflowError):
@@ -661,7 +666,7 @@ def _authorization_payload_from_info(auth_info: object, card_pepper: str = "") -
         "state": state,
         "expire": expire,
         "expire_text": expire_text,
-        "card_fingerprint": _fingerprint_card(activated_card, card_pepper),
+        "card_fingerprint": stored_fingerprint or _fingerprint_card(activated_card, card_pepper),
         "card_mask": card_mask,
         "activated_at": activated_at,
         "user_id": str(info.get("user_id", "")),
@@ -4682,6 +4687,19 @@ class PortalSyncClient:
                 continue
             try:
                 current = load_group_config(group_id)
+                portal_auth = change.get("auth")
+                if isinstance(portal_auth, dict):
+                    from ..auth.manager import apply_portal_group_authorization
+
+                    if not apply_portal_group_authorization(group_id, portal_auth):
+                        raise RuntimeError("portal_auth_apply_failed")
+                    auth_state = str(portal_auth.get("state", "missing") or "missing")
+                    auth_expire = str(portal_auth.get("expire_text", "无授权记录") or "无授权记录")
+                    _print_sync_group_action(
+                        "网页群授权已恢复",
+                        group_id,
+                        detail=f"状态 {auth_state}；到期 {auth_expire}",
+                    )
                 projection_module = _sync_projection_module()
                 is_current_web_revision = (
                     str(change.get("source", "")).strip().lower() == "web"

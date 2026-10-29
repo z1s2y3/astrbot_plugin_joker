@@ -986,6 +986,83 @@ def get_group_auth_info(group_id: str) -> dict:
         info["expire"] = _get_expire_int(info)
     return info
 
+
+def apply_portal_group_authorization(group_id: str, auth_info: object) -> bool:
+    """Restore one group-scoped authorization received from the web portal.
+
+    The portal stores only a non-secret card fingerprint and the group
+    authorization state. A new Windows installation therefore receives a
+    local gate record without receiving or inventing a reusable card. The
+    synthetic key is deliberately excluded from ``used_keys`` and can never
+    authorize another group.
+    """
+    normalized_group_id = str(group_id or "").strip()
+    if not _AUTH_GROUP_ID_RE.fullmatch(normalized_group_id):
+        return False
+    info = auth_info if isinstance(auth_info, dict) else {}
+    state = str(info.get("state", "missing") or "missing").strip().lower()
+    if state not in {"active", "expired", "missing", "unverified"}:
+        state = "missing"
+    try:
+        expire = int(info.get("expire", 0) or 0)
+    except (TypeError, ValueError, OverflowError):
+        expire = 0
+    if expire < -1:
+        expire = 0
+    if state == "active" and expire == 0:
+        state = "missing"
+    if expire == -1:
+        state = "active"
+    if state == "unverified":
+        expire = 0
+    try:
+        activated_at = max(0, int(info.get("activated_at", 0) or 0))
+    except (TypeError, ValueError, OverflowError):
+        activated_at = 0
+    fingerprint = str(info.get("card_fingerprint", "") or "").strip().lower()
+    if not re.fullmatch(r"[0-9a-f]{64}", fingerprint):
+        fingerprint = ""
+    card_mask = str(info.get("card_mask", "") or "").strip()[:64]
+    user_id = str(info.get("user_id", "") or "")[:32]
+
+    with _auth_lock:
+        data = load_auth_data()
+        groups = data.setdefault("groups", {})
+        if not isinstance(groups, dict):
+            groups = {}
+            data["groups"] = groups
+        existing = groups.get(normalized_group_id)
+        existing = existing if isinstance(existing, dict) else {}
+        existing_key = str(existing.get("key", "") or "").strip()
+        preserved_key = existing_key if _LICENSE_KEY_RE.fullmatch(existing_key) else ""
+        if not preserved_key:
+            preserved_key = f"PORTAL_SYNC_{normalized_group_id}"
+        if state == "missing":
+            groups.pop(normalized_group_id, None)
+        else:
+            previous_days = existing.get("days", 0)
+            try:
+                previous_days = int(previous_days)
+            except (TypeError, ValueError, OverflowError):
+                previous_days = -1 if expire == -1 else 0
+            groups[normalized_group_id] = {
+                "expire": expire,
+                "activated_at": activated_at,
+                "key": preserved_key,
+                "days": previous_days,
+                "user_id": user_id or str(existing.get("user_id", "") or ""),
+                "portal_synced": True,
+                "card_fingerprint": fingerprint,
+                "card_mask": card_mask,
+                "portal_state": state,
+            }
+        save_auth_data(data)
+        reloaded = load_auth_data()
+        saved = reloaded.get("groups", {}).get(normalized_group_id)
+        if state == "missing":
+            return not isinstance(saved, dict)
+        return isinstance(saved, dict) and _get_expire_int(saved) == expire
+
 def add_auth_time(group_id: str, days: int) -> bool:
     with _auth_lock:
         group_id = str(group_id)
