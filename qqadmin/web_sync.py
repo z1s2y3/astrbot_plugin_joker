@@ -1684,6 +1684,7 @@ class PortalSyncClient:
         # Local commands can change a projection between heartbeats. Keep an
         # explicit dirty set so the Windows change is sent immediately.
         self._forced_config_group_ids: set[str] = set()
+        self._manual_web_pull_group_ids: set[str] = set()
         # ``None`` means the server scope has not been negotiated yet.  The
         # first request is deliberately auth-only and contains no group config,
         # runtime summary or message log.  A new portal returns the bound IDs;
@@ -1867,6 +1868,24 @@ class PortalSyncClient:
     def request_sync(self) -> None:
         """Request a coalesced synchronization as soon as the current one ends."""
         self._sync_requested.set()
+
+    async def request_web_group_config_pull(self, group_id: object) -> dict[str, Any]:
+        normalized_group_id = self._valid_failure_group_id(group_id)
+        if not normalized_group_id:
+            raise _PortalSyncProtocolError("invalid_pull_target")
+        result = await self._post_json(
+            "/api/sync/v1/config-pull",
+            {"client_id": self.client_id, "group_id": normalized_group_id},
+            20.0,
+        )
+        if result.get("status") != "ok":
+            code = str(
+                result.get("code", "config_pull_rejected") or "config_pull_rejected"
+            )
+            raise _PortalSyncProtocolError(code)
+        self._manual_web_pull_group_ids.add(normalized_group_id)
+        self.request_sync()
+        return result
 
     def mark_runtime_dirty(self, group_id: object) -> None:
         """Prioritize one group in the next read-only runtime upload."""
@@ -3958,6 +3977,7 @@ class PortalSyncClient:
                 raise
             except Exception:
                 logger.debug("读取 Windows 本机已加入群列表失败", exc_info=True)
+        local_group_ids.update(self._manual_web_pull_group_ids)
         auth_source_recovered = (
             auth_source_complete is True
             and self._last_auth_source_complete is False
@@ -4650,6 +4670,8 @@ class PortalSyncClient:
                     is_current_web_revision
                     and group_id in locally_changed_config_group_ids
                     and group_id not in (self._server_managed_group_ids or set())
+                    and group_id not in self._manual_web_pull_group_ids
+                    and change.get("manual_pull") is not True
                 ):
                     # Windows is the execution-side source of truth.  Do not
                     # write an older pending portal projection over a local
@@ -4861,6 +4883,7 @@ class PortalSyncClient:
                     if self._valid_failure_group_id(value)
                 }
                 if acknowledged != len(applied):
+                    self._manual_web_pull_group_ids.difference_update(acknowledged_ids)
                     if acknowledged_ids:
                         for item in applied:
                             if str(item["group_id"]) not in acknowledged_ids:
@@ -4892,6 +4915,9 @@ class PortalSyncClient:
                             item["group_id"],
                             detail=f"版本 {item['revision']} 已由网页确认",
                         )
+                    self._manual_web_pull_group_ids.difference_update(
+                        acknowledged_group_ids
+                    )
             except Exception as exc:
                 summary = self._failure_summary("ack_failed", exc)
                 for item in applied:

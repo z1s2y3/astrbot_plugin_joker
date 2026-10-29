@@ -147,6 +147,9 @@ class GroupClientSync(Base):
     applied_revision: Mapped[int] = mapped_column(Integer, default=0, server_default="0", nullable=False)
     last_seen_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     sync_error: Mapped[str] = mapped_column(String(255), default="", nullable=False)
+    pull_requested: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default="0", nullable=False
+    )
 
 
 class GameAuthorization(Base):

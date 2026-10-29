@@ -102,6 +102,20 @@ def _migrate_database(engine: Engine) -> None:
                 )
             )
 
+    if "portal_group_client_sync" in inspector.get_table_names():
+        client_sync_columns = {
+            column["name"]
+            for column in inspect(engine).get_columns("portal_group_client_sync")
+        }
+        if "pull_requested" not in client_sync_columns:
+            with engine.begin() as connection:
+                connection.execute(
+                    text(
+                        "ALTER TABLE portal_group_client_sync "
+                        "ADD COLUMN pull_requested BOOLEAN NOT NULL DEFAULT 0"
+                    )
+                )
+
     # ``create_all`` cannot add the user-supplied mini-program/WebSocket card
     # fields to an existing portal.  Keep them separate from the JG heartbeat
     # card so either credential can be rotated without changing the other.

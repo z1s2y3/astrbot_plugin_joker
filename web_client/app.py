@@ -1212,6 +1212,24 @@ def _process_group_refresh_request(
         db.close()
 
 
+def _process_group_config_pull_request(
+    group_id: str, client_id: str
+) -> dict[str, Any]:
+    db = get_session_factory()()
+    try:
+        result = remote_store.request_group_config_pull(db, group_id, client_id)
+        if result.get("status") == "ok":
+            db.commit()
+        else:
+            db.rollback()
+        return result
+    except Exception:
+        db.rollback()
+        raise
+    finally:
+        db.close()
+
+
 def _static_asset_version() -> str:
     """Return a cache key that changes whenever shipped browser assets change.
 
@@ -3484,6 +3502,54 @@ def create_app() -> FastAPI:
                 "X-Content-Type-Options": "nosniff",
             },
         )
+
+    @app.post("/api/sync/v1/config-pull")
+    async def sync_config_pull(request: Request):
+        _require_sync_token(request)
+        if settings.data_mode != "remote":
+            return JSONResponse(
+                {"status": "error", "code": "remote_mode_disabled"},
+                status_code=409,
+            )
+        pepper_mismatch = _card_pepper_mismatch_response(request)
+        if pepper_mismatch is not None:
+            return pepper_mismatch
+        try:
+            payload = await request.json()
+        except (UnicodeDecodeError, ValueError):
+            return JSONResponse(
+                {"status": "error", "code": "invalid_pull_target"},
+                status_code=400,
+            )
+        if not isinstance(payload, dict):
+            return JSONResponse(
+                {"status": "error", "code": "invalid_pull_target"},
+                status_code=400,
+            )
+        client_id, client_id_error = _extract_sync_client_id(request, payload)
+        if client_id_error is not None:
+            return client_id_error
+        group_id = str(payload.get("group_id", "") or "").strip()
+        if not remote_store.GROUP_ID_RE.fullmatch(group_id):
+            return JSONResponse(
+                {"status": "error", "code": "invalid_pull_target"},
+                status_code=400,
+            )
+        try:
+            return await run_in_threadpool(
+                _process_group_config_pull_request, group_id, client_id
+            )
+        except Exception:
+            logger.exception(
+                "Windows 手动拉取群配置请求入队失败 client=%s group=%s",
+                client_id,
+                group_id,
+            )
+            return JSONResponse(
+                {"status": "error", "code": "sync_storage_busy"},
+                status_code=503,
+                headers={"Retry-After": "5"},
+            )
 
     @app.post("/api/sync/v1/exchange")
     async def sync_exchange(request: Request):

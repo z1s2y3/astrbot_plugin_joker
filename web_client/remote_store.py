@@ -2862,6 +2862,58 @@ def request_group_refresh(db: Session, group_ids: list[object] | set[object]) ->
     return changed
 
 
+def request_group_config_pull(
+    db: Session, group_id: object, client_id: object
+) -> dict[str, Any]:
+    """Queue the current web revision for one explicitly requesting client."""
+
+    normalized_group_id = str(group_id or "").strip()
+    normalized_client_id = str(client_id or "").strip()[:64]
+    if not GROUP_ID_RE.fullmatch(normalized_group_id) or not normalized_client_id:
+        return {"status": "error", "code": "invalid_pull_target"}
+    if db.scalar(
+        select(GroupAccess.id).where(GroupAccess.group_id == normalized_group_id)
+    ) is None:
+        return {"status": "error", "code": "group_not_bound"}
+    snapshot = get_snapshot(db, normalized_group_id, for_update=True)
+    if (
+        snapshot is None
+        or _safe_bigint(snapshot.revision) <= 0
+        or not isinstance(snapshot.config_json, dict)
+    ):
+        return {"status": "error", "code": "web_config_missing"}
+
+    revision = _safe_bigint(snapshot.revision)
+    state = _group_client_sync(
+        db, normalized_group_id, normalized_client_id, for_update=True
+    )
+    already_pending = bool(
+        state is not None
+        and state.pull_requested
+        and _safe_bigint(state.applied_revision) < revision
+    )
+    if state is None:
+        state = GroupClientSync(
+            group_id=normalized_group_id,
+            client_id=normalized_client_id,
+            applied_revision=max(0, revision - 1),
+        )
+        db.add(state)
+    elif not already_pending and _safe_bigint(state.applied_revision) >= revision:
+        state.applied_revision = max(0, revision - 1)
+    state.last_seen_at = utcnow()
+    state.sync_error = ""
+    state.pull_requested = True
+    db.flush()
+    _update_group_sync_summary(db, snapshot)
+    return {
+        "status": "ok",
+        "group_id": normalized_group_id,
+        "revision": revision,
+        "already_pending": already_pending,
+    }
+
+
 def requested_group_refresh_ids(
     db: Session, client_id: str, known_group_ids: list[object] | None
 ) -> list[str]:
@@ -3100,16 +3152,13 @@ def apply_bot_exchange(
                     group_id=group_id,
                     client_id=normalized_client_id,
                     applied_revision=(
-                        _safe_bigint(snapshot.applied_revision) if is_owner else 0
+                        _safe_bigint(snapshot.applied_revision)
+                        if is_owner
+                        else _safe_bigint(snapshot.revision)
                     ),
                 )
                 db.add(state)
                 states[(group_id, normalized_client_id)] = state
-            elif snapshot.client_id == normalized_client_id:
-                state.applied_revision = max(
-                    _safe_bigint(state.applied_revision),
-                    _safe_bigint(snapshot.applied_revision),
-                )
             state.last_seen_at = now
             snapshot.last_seen_at = now
         db.flush()
@@ -3194,10 +3243,10 @@ def apply_bot_exchange(
                 snapshot.runtime_json = {}
                 snapshot.runtime_updated_at = None
 
-    if config_source_complete and normalized_known_ids:
+    if config_source_complete and client_portal_group_ids:
         for snapshot in db.scalars(
             select(GroupConfigSnapshot).where(
-                GroupConfigSnapshot.group_id.in_(normalized_known_ids)
+                GroupConfigSnapshot.group_id.in_(client_portal_group_ids)
             ).order_by(GroupConfigSnapshot.group_id).with_for_update().execution_options(
                 populate_existing=True
             )
@@ -3210,8 +3259,6 @@ def apply_bot_exchange(
                     continue
                 state.last_seen_at = now
                 snapshot.last_seen_at = now
-                if snapshot.client_id != normalized_client_id:
-                    continue
                 if auth_source_complete and snapshot.sync_status in {
                     LOCAL_SOURCE_PROTECTED_STATUS,
                     LOCAL_SOURCE_PARTIAL_STATUS,
@@ -3222,6 +3269,19 @@ def apply_bot_exchange(
                         else "synced"
                     )
                     snapshot.sync_error = ""
+                if (
+                    state.pull_requested
+                    and _safe_bigint(state.applied_revision) < snapshot.revision
+                ):
+                    changes.append(
+                        {
+                            "group_id": snapshot.group_id,
+                            "revision": snapshot.revision,
+                            "config": _client_config(snapshot.config_json),
+                            "manual_pull": True,
+                            **change_metadata(snapshot),
+                        }
+                    )
                 continue
             snapshot.client_id = client_id[:64]
             snapshot.last_seen_at = now
@@ -3678,6 +3738,8 @@ def acknowledge_bot_changes(
             state.last_seen_at = utcnow()
             if revision > _safe_bigint(state.applied_revision):
                 state.applied_revision = revision
+            if revision >= snapshot.revision:
+                state.pull_requested = False
             state.sync_error = ""
             _update_group_sync_summary(db, snapshot)
             count += 1
