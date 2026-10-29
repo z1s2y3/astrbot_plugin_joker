@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from contextlib import asynccontextmanager
 import hashlib
 import hmac
 import inspect
@@ -1757,9 +1758,11 @@ class PortalSyncClient:
         # their callers wake the periodic loop instead of making a second,
         # concurrent HTTP request from the command handler.
         self._sync_requested = asyncio.Event()
-        # Keep local background sync and on-demand group actions from issuing
-        # concurrent writes to the same Linux snapshot rows.
-        self._portal_write_lock = asyncio.Lock()
+        # Keep writes for one group ordered without forcing ten unrelated
+        # groups to wait behind each other. The fallback lock protects
+        # payloads that do not carry a group scope.
+        self._portal_group_locks: dict[str, asyncio.Lock] = {}
+        self._portal_group_locks_guard = asyncio.Lock()
         # Reply-image transfers are deliberately decoupled from the exchange
         # and ACK requests.  A large image or a temporarily slow portal must
         # never turn a normal configuration save into a reverse-proxy timeout.
@@ -2204,6 +2207,73 @@ class PortalSyncClient:
         client_offset = (sum(ord(char) for char in self.client_id) % 7) * 0.07
         return min(3.0, base_delay + client_offset)
 
+    def _portal_write_lock_keys(
+        self, endpoint: str, payload: Mapping[str, Any]
+    ) -> tuple[str, ...]:
+        """Return the group scopes touched by one portal write."""
+
+        keys: set[str] = set()
+
+        def add_group(value: object) -> None:
+            normalized = self._valid_failure_group_id(value)
+            if normalized:
+                keys.add(normalized)
+
+        if endpoint == "/api/sync/v1/config-pull":
+            add_group(payload.get("group_id"))
+        elif endpoint == "/api/sync/v1/exchange":
+            for value in payload.get("known_group_ids", []):
+                add_group(value)
+            for value in payload.get("local_group_ids", []):
+                add_group(value)
+            for value in payload.get("runtime_summaries", {}):
+                add_group(value)
+            for value in payload.get("groups", []):
+                if isinstance(value, Mapping):
+                    add_group(value.get("group_id"))
+            for value in payload.get("apply_failures", []):
+                if isinstance(value, Mapping):
+                    add_group(value.get("group_id"))
+        elif endpoint == "/api/sync/v1/ack":
+            for value in payload.get("groups", []):
+                if isinstance(value, Mapping):
+                    add_group(value.get("group_id"))
+        else:
+            group_id = str(payload.get("group_id", "") or "").strip()
+            if group_id:
+                add_group(group_id)
+            elif str(payload.get("scope_type", "group") or "group").strip().lower() == "private":
+                private_id = str(payload.get("scope_id", "") or "").strip()
+                if private_id:
+                    keys.add(f"private:{private_id[:80]}")
+
+        if not keys:
+            keys.add("__sync_global__")
+        return tuple(sorted(keys))
+
+    @asynccontextmanager
+    async def _portal_locks_for_keys(self, keys: tuple[str, ...]):
+        """Serialize overlapping portal writes while allowing disjoint groups."""
+
+        normalized_keys = tuple(sorted({str(key).strip() for key in keys if str(key).strip()}))
+        if not normalized_keys:
+            normalized_keys = ("__sync_global__",)
+        async with self._portal_group_locks_guard:
+            locks = [
+                self._portal_group_locks.setdefault(key, asyncio.Lock())
+                for key in normalized_keys
+            ]
+        acquired: list[asyncio.Lock] = []
+        try:
+            for lock in locks:
+                await lock.acquire()
+                acquired.append(lock)
+            yield
+        finally:
+            for lock in reversed(acquired):
+                if lock.locked():
+                    lock.release()
+
     async def _post_json(
         self,
         endpoint: str,
@@ -2221,7 +2291,8 @@ class PortalSyncClient:
         avoiding an unbounded request storm.
         """
         if endpoint in _SERIALIZED_PORTAL_WRITE_ENDPOINTS and not _serialized:
-            async with self._portal_write_lock:
+            lock_keys = self._portal_write_lock_keys(endpoint, payload)
+            async with self._portal_locks_for_keys(lock_keys):
                 return await self._post_json(
                     endpoint,
                     payload,

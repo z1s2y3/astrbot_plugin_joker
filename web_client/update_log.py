@@ -10,6 +10,16 @@ from copy import deepcopy
 # remains available even on a freshly installed portal.
 UPDATE_LOG: tuple[dict[str, object], ...] = (
     {
+        "version": "1.11.415",
+        "date": "2026-10-29",
+        "title": "优化多群并行同步",
+        "items": (
+            "网页端按群组分别排队，十个互不相关的群可以同时同步。",
+            "同一群的配置、成员目录、消息缓存和确认写入仍保持顺序。",
+            "同步超时或取消时不会提前释放数据库事务对应的群锁。",
+        ),
+    },
+    {
         "version": "1.11.414",
         "date": "2026-10-29",
         "title": "多通道同步与网页整理",

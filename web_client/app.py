@@ -2144,9 +2144,10 @@ def create_app() -> FastAPI:
         "bot_type": "bot_main",
     }
     app.state.session_max_age = settings.session_max_age
-    # One queue for write-side Windows sync routes. Multiple execution clients
-    # may share a portal, but their snapshot exchanges must not overlap.
-    app.state.sync_write_lock = asyncio.Lock()
+    # Keep one lock per group instead of one global queue. Ten unrelated groups
+    # can sync in parallel, while writes for the same group remain ordered.
+    app.state.sync_group_locks = {}
+    app.state.sync_group_locks_guard = asyncio.Lock()
     app.state.dummy_password_hash = hash_password("dummy-password-for-timing-check")
     app.add_middleware(
         PortalSessionMiddleware,
@@ -2401,42 +2402,78 @@ def create_app() -> FastAPI:
         db.execute(select(1)).scalar_one()
         return {"status": "ok"}
 
-    async def _run_serialized_sync_write(operation, *args, timeout: float | None = None):
-        """Run one portal sync database write without overlapping another client."""
+    async def _run_serialized_sync_write(
+        operation,
+        *args,
+        timeout: float | None = None,
+        lock_keys: list[object] | tuple[object, ...] | set[object] | None = None,
+    ):
+        """Run one sync write while serializing only overlapping group scopes."""
 
-        lock = app.state.sync_write_lock
-        acquired = False
-        try:
-            # Do not let a burst of booting Windows clients wait forever in a
-            # reverse proxy. The caller returns a retryable status instead.
-            await asyncio.wait_for(lock.acquire(), timeout=5.0)
-            acquired = True
-            task = asyncio.create_task(run_in_threadpool(operation, *args))
-            if timeout is None:
-                return await task
-            try:
-                # A worker thread cannot be safely interrupted halfway through
-                # a transaction. Shield it on timeout and keep the queue lock
-                # until it has actually committed or rolled back.
-                return await asyncio.wait_for(asyncio.shield(task), timeout=timeout)
-            except asyncio.TimeoutError:
-                async def release_after_completion() -> None:
-                    try:
-                        await task
-                    except Exception:
-                        logger.debug(
-                            "超时后的网页同步事务已结束", exc_info=True
-                        )
-                    finally:
+        normalized_keys = sorted(
+            {
+                str(value or "").strip()[:80]
+                for value in (lock_keys or [])
+                if str(value or "").strip()
+            }
+        )
+        if not normalized_keys:
+            normalized_keys = ["__sync_global__"]
+        async with app.state.sync_group_locks_guard:
+            locks = [
+                app.state.sync_group_locks.setdefault(key, asyncio.Lock())
+                for key in normalized_keys
+            ]
+
+        acquired: list[asyncio.Lock] = []
+        queue_deadline = asyncio.get_running_loop().time() + 30.0
+
+        def defer_lock_release(task: asyncio.Task) -> None:
+            held_locks = tuple(acquired)
+            acquired.clear()
+
+            async def release_after_completion() -> None:
+                try:
+                    await task
+                except Exception:
+                    logger.debug("后台网页同步事务已结束", exc_info=True)
+                finally:
+                    for lock in reversed(held_locks):
                         if lock.locked():
                             lock.release()
 
-                asyncio.create_task(release_after_completion())
-                acquired = False
+            asyncio.create_task(release_after_completion())
+
+        try:
+            # All keys are sorted before acquisition, preventing deadlocks when
+            # two multi-group exchanges overlap on only part of their scopes.
+            for lock in locks:
+                remaining = queue_deadline - asyncio.get_running_loop().time()
+                if remaining <= 0:
+                    raise asyncio.TimeoutError
+                await asyncio.wait_for(lock.acquire(), timeout=remaining)
+                acquired.append(lock)
+            task = asyncio.create_task(run_in_threadpool(operation, *args))
+            if timeout is None:
+                try:
+                    return await asyncio.shield(task)
+                except asyncio.CancelledError:
+                    defer_lock_release(task)
+                    raise
+            try:
+                # A worker thread cannot be interrupted halfway through a
+                # transaction. Keep the group locks until it commits/rolls back.
+                return await asyncio.wait_for(asyncio.shield(task), timeout=timeout)
+            except asyncio.TimeoutError:
+                defer_lock_release(task)
+                raise
+            except asyncio.CancelledError:
+                defer_lock_release(task)
                 raise
         finally:
-            if acquired:
-                lock.release()
+            for lock in reversed(acquired):
+                if lock.locked():
+                    lock.release()
 
     def _require_sync_token(request: Request) -> None:
         supplied = request.headers.get("authorization", "")
@@ -3612,7 +3649,10 @@ def create_app() -> FastAPI:
             )
         try:
             return await _run_serialized_sync_write(
-                _process_group_config_pull_request, group_id, client_id
+                _process_group_config_pull_request,
+                group_id,
+                client_id,
+                lock_keys=[group_id],
             )
         except Exception:
             logger.exception(
@@ -3706,6 +3746,25 @@ def create_app() -> FastAPI:
         # newly saved configuration into an error state.  The whole
         # synchronous transaction runs in a worker thread so MySQL locks and
         # large projections do not block unrelated browser requests.
+        exchange_lock_keys = {
+            str(value or "").strip()
+            for value in [
+                *known_group_ids,
+                *local_group_ids,
+                *runtime_summaries.keys(),
+                *(
+                    item.get("group_id")
+                    for item in groups
+                    if isinstance(item, dict)
+                ),
+                *(
+                    item.get("group_id")
+                    for item in apply_failures
+                    if isinstance(item, dict)
+                ),
+            ]
+            if str(value or "").strip()
+        }
         try:
             return await _run_serialized_sync_write(
                 _process_sync_exchange,
@@ -3724,6 +3783,7 @@ def create_app() -> FastAPI:
                 _public_request_origin(request),
                 local_group_ids,
                 timeout=settings.sync_exchange_timeout_seconds,
+                lock_keys=exchange_lock_keys,
             )
         except asyncio.TimeoutError:
             logger.warning(
@@ -3764,6 +3824,7 @@ def create_app() -> FastAPI:
                         _public_request_origin(request),
                         local_group_ids,
                         timeout=settings.sync_exchange_timeout_seconds,
+                        lock_keys=exchange_lock_keys,
                     )
                     if isinstance(fallback, dict):
                         fallback["runtime_deferred"] = True
@@ -3823,7 +3884,14 @@ def create_app() -> FastAPI:
         if client_id_error is not None:
             return client_id_error
         return await _run_serialized_sync_write(
-            _process_sync_ack, client_id, groups
+            _process_sync_ack,
+            client_id,
+            groups,
+            lock_keys=[
+                item.get("group_id")
+                for item in groups
+                if isinstance(item, dict)
+            ],
         )
 
     @app.post("/api/sync/v1/member-directory")
@@ -3878,6 +3946,7 @@ def create_app() -> FastAPI:
             levels_pending,
             snapshot_complete,
             expected_count,
+            lock_keys=[group_id or f"private:{scope_id}"],
         )
         stored_count = (
             int(result.get("stored_count", 0) or 0)
@@ -3969,7 +4038,7 @@ def create_app() -> FastAPI:
         client_id, client_id_error = _extract_sync_client_id(request, payload)
         if client_id_error is not None:
             return client_id_error
-        result = await run_in_threadpool(
+        result = await _run_serialized_sync_write(
             _process_message_cache_upload,
             client_id,
             group_id,
@@ -3978,6 +4047,7 @@ def create_app() -> FastAPI:
             scope_id,
             complete_user_id,
             complete_count,
+            lock_keys=[group_id or f"private:{scope_id}"],
         )
         if result.get("status") == "error":
             return JSONResponse(
