@@ -290,7 +290,9 @@ _SYNC_ERROR_MESSAGES = {
         "读取网页响应时连接中断，通常是 CDN、代理或源站网络不稳定；"
         "正在按同步间隔重试。"
     ),
-    "timeout": "连接网页配置中心超时，正在按同步间隔重试。",
+    "timeout": "网页同步请求超时，正在按同步间隔重试。",
+    "connect_timeout": "无法连接网页配置中心，正在按同步间隔重试。",
+    "response_timeout": "已连接网页配置中心，但等待同步响应超时，正在按同步间隔重试。",
     "transport_error": "无法连接网页配置中心，正在按同步间隔重试。",
     "sync_token_invalid": "同步令牌被网页服务器拒绝，请核对 Windows 插件与服务器的同步令牌。",
     "remote_mode_disabled": "网页服务器未启用远程同步模式，请检查 Linux 网页配置。",
@@ -307,6 +309,7 @@ _SYNC_ERROR_MESSAGES = {
         "网页同步接口返回无效数据，请检查 Linux 网页服务版本、反向代理和响应内容。"
     ),
     "sync_storage_busy": "网页数据库正被其他同步占用，Windows 已保留本地数据并自动重试。",
+    "sync_timeout": "网页已收到同步请求，但处理时间较长，Windows 将继续自动重试。",
     "execution_client_blocked": "该 Windows 执行端已被 Linux 网页停用，请联系主人恢复。",
     "sync_transaction_failed": "网页同步事务失败，请查看 Linux 网页服务日志；Windows 将继续保留本地配置。",
     "member_directory_storage_busy": "网页成员目录正在写入，Windows 已保留本地成员列表并自动补传。",
@@ -2132,8 +2135,19 @@ class PortalSyncClient:
         if PortalSyncClient._exception_has_tls_signal(exc):
             return "tls_handshake_failed"
         error_type = re.sub(r"[^a-z0-9_]", "_", type(exc).__name__.lower()).strip("_")
-        if "timeout" in error_type:
-            return "timeout"
+        if error_type in {"connecttimeout", "connect_timeout"}:
+            return "connect_timeout"
+        if error_type in {
+            "readtimeout",
+            "read_timeout",
+            "writetimeout",
+            "write_timeout",
+            "pooltimeout",
+            "pool_timeout",
+        } or "timeout" in error_type:
+            # The request reached the HTTP client, but the response did not
+            # arrive in time.  This is not the same as being unable to connect.
+            return "response_timeout"
         if error_type in {
             "readerror",
             "read_error",
@@ -2174,6 +2188,13 @@ class PortalSyncClient:
         """
 
         now = time.monotonic()
+        if self._is_non_connection_delay(error_code):
+            logger.debug(
+                "网页同步暂时延迟：%s（%s）",
+                error_code,
+                self.sync_error_message(error_code),
+            )
+            return
         changed = error_code != self._last_error_log_code
         due = now - self._last_error_log_at >= _SYNC_ERROR_REPEAT_LOG_SECONDS
         if changed or due:
@@ -2190,6 +2211,36 @@ class PortalSyncClient:
             self._suppressed_error_count = 0
         else:
             self._suppressed_error_count += 1
+
+    @staticmethod
+    def _is_non_connection_delay(error_code: object) -> bool:
+        """Return whether the portal was reached but sync processing was slow."""
+
+        code = str(error_code or "").strip().lower()
+        if code in {
+            "response_timeout",
+            "sync_timeout",
+            "sync_storage_busy",
+            "member_directory_storage_busy",
+        }:
+            return True
+        if re.fullmatch(r"http_status_52[0-5]", code):
+            return False
+        return bool(re.fullmatch(r"http_status_5\d\d", code))
+
+    @staticmethod
+    def _is_connection_failure(error_code: object) -> bool:
+        """Return whether the client could not establish or keep the link."""
+
+        code = str(error_code or "").strip().lower()
+        if code in {
+            "connect_timeout",
+            "transport_error",
+            "tls_handshake_failed",
+            "read_error",
+        }:
+            return True
+        return bool(re.fullmatch(r"http_status_52[0-5]", code))
 
     def _note_sync_recovery(self) -> None:
         """Make a later successful retry visible without repeating failures."""
@@ -4030,7 +4081,12 @@ class PortalSyncClient:
                 except Exception as exc:
                     self.last_error = self._sync_error_summary(exc)
                     self._log_sync_failure(self.last_error)
-                    if self._connection_state != "error":
+                    # A 503/sync timeout/read timeout proves the request got
+                    # to the portal.  Keep the connection state online until
+                    # an actual transport/connectivity failure is observed;
+                    # otherwise a slow database transaction is shown as an
+                    # offline Windows computer in the portal.
+                    if self._is_connection_failure(self.last_error) and self._connection_state != "error":
                         self._connection_state = "error"
                         if self.show_connection_events and self._last_sync_group_ids:
                             _print_sync_group_action(

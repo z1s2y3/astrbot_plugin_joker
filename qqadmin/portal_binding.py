@@ -70,12 +70,17 @@ _SAFE_SYNC_ERROR_CODES = frozenset(
         "cdn_origin_tls_handshake_failed",
         "cdn_origin_unavailable",
         "card_pepper_mismatch",
+        "connect_timeout",
         "group_apply_or_ack_failed",
         "invalid_json_response",
+        "member_directory_storage_busy",
         "read_error",
+        "response_timeout",
         "request_retry_exhausted",
         "remote_mode_disabled",
         "sync_error",
+        "sync_storage_busy",
+        "sync_timeout",
         "sync_token_invalid",
         "tls_handshake_failed",
         "timeout",
@@ -109,7 +114,9 @@ def _sync_error_message(code: str) -> str:
             "已连接网页但读取响应中断：请检查 CDN、Nginx 反代和源站网络，"
             "系统会按同步间隔重试"
         ),
-        "timeout": "连接网页配置中心超时：请检查网络、CDN/反代和源站响应，系统会按同步间隔重试",
+        "timeout": "网页同步请求超时：系统会按同步间隔重试",
+        "connect_timeout": "无法连接网页配置中心：请检查网络、域名解析和 HTTPS 反代，系统会按同步间隔重试",
+        "response_timeout": "已连接网页配置中心，但等待同步响应超时，系统会按同步间隔重试",
         "transport_error": "无法连接网页配置中心：请检查网络、域名解析和 HTTPS 反代，系统会按同步间隔重试",
         "request_retry_exhausted": "网页同步请求重试后仍失败：请检查网页服务和网络链路",
         "remote_mode_disabled": "网页服务器未启用远程同步模式：请检查 Linux 网页配置",
@@ -118,6 +125,9 @@ def _sync_error_message(code: str) -> str:
         "group_apply_or_ack_failed": "部分网页配置未能写入本地或确认，下一次同步会继续处理",
         "invalid_json_response": "网页同步接口返回无效数据，请检查网页服务版本",
         "sync_error": "网页同步失败，系统会按同步间隔重试",
+        "sync_storage_busy": "网页数据库正被其他同步占用，Windows 会自动重试",
+        "sync_timeout": "网页已收到同步请求，但处理时间较长，Windows 会自动重试",
+        "member_directory_storage_busy": "网页成员目录正在写入，Windows 会自动重试",
     }
     if re.fullmatch(r"http_status_525", code):
         return messages["cdn_origin_tls_handshake_failed"]
@@ -167,8 +177,10 @@ def _classify_request_error(exc: Exception) -> tuple[str, str]:
     """Map transport exceptions to fixed user-safe diagnostic results."""
 
     class_name = type(exc).__name__.lower()
-    if "timeout" in class_name:
-        code = "timeout"
+    if class_name in {"connecttimeout", "connect_timeout"}:
+        code = "connect_timeout"
+    elif "timeout" in class_name:
+        code = "response_timeout"
     elif _exception_has_tls_signal(exc):
         code = "tls_handshake_failed"
     elif class_name in {
@@ -301,12 +313,12 @@ def _safe_error_code(value: object) -> str:
     # Accept the compact class-name codes emitted by older Windows plugin
     # builds, but expose only the canonical protocol codes from this point on.
     candidate = {
+        "connecttimeout": "connect_timeout",
         "readerror": "read_error",
         "remoteprotocolerror": "read_error",
-        "connecttimeout": "timeout",
-        "readtimeout": "timeout",
-        "writetimeout": "timeout",
-        "pooltimeout": "timeout",
+        "readtimeout": "response_timeout",
+        "writetimeout": "response_timeout",
+        "pooltimeout": "response_timeout",
     }.get(candidate, candidate)
     if candidate in _SAFE_SYNC_ERROR_CODES:
         return candidate

@@ -309,7 +309,7 @@ def _compact_reply_text(text: str) -> str:
     return compact
 
 
-@register("astrbot_plugin_joker", "Joker", "SCUM 查询与 QQ 群管插件", "1.11.418")
+@register("astrbot_plugin_joker", "Joker", "SCUM 查询与 QQ 群管插件", "1.11.424")
 class MyPlugin(Star):
     _MEMBER_REFRESH_WARNING_COOLDOWN_SECONDS = 300
     _GROUP_BOT_ACTIVITY_TTL_SECONDS = 120
@@ -3673,7 +3673,7 @@ class MyPlugin(Star):
         self._music_share_seen: dict[str, float] = {}
         self._music_share_seen_ttl = 30.0
         
-        logger.debug("Joker 插件初始化完成，版本 1.11.418")
+        logger.debug("Joker 插件初始化完成，版本 1.11.424")
 
     @staticmethod
     def _write_json_atomic(path: str, data: dict) -> None:
@@ -9959,6 +9959,82 @@ class MyPlugin(Star):
         return str(segments or "")
 
     @staticmethod
+    def _is_at_only_moderation_message(
+        message: object, raw_message: object, segments: object
+    ) -> bool:
+        """Return whether a message contains only QQ mention markers.
+
+        OneBot and AstrBot expose an at-only message as ``[CQ:at,...]`` or
+        ``[At:QQ]``.  Those protocol markers are not user content and must not
+        trigger the recall system's ``all`` mode.  Text alongside an at marker
+        remains eligible for the normal keyword/content checks.
+        """
+
+        def classify_segment(value: object) -> bool | None:
+            """Classify structured message segments without using repr()."""
+            if isinstance(value, (list, tuple)):
+                if not value:
+                    return None
+                states = [classify_segment(item) for item in value if item is not None]
+                if not states:
+                    return None
+                if any(state is False for state in states):
+                    return False
+                return True if all(state is True for state in states) else None
+            if isinstance(value, dict):
+                segment_type = str(value.get("type", "") or "").strip().lower()
+                data = value.get("data", value)
+                if segment_type in {"at", "mention"}:
+                    return True
+                if segment_type in {"plain", "text"}:
+                    text = data.get("text", "") if isinstance(data, dict) else data
+                    return not str(text or "").strip()
+                return False if segment_type else None
+
+            segment_name = type(value).__name__.strip().lower()
+            segment_type = str(getattr(value, "type", "") or "").strip().lower()
+            if segment_name in {"at", "mention"} or segment_type in {"at", "mention"}:
+                return True
+            if segment_name in {"plain", "text"} or segment_type in {"plain", "text"}:
+                return not str(getattr(value, "text", "") or "").strip()
+            return None
+
+        structured_state = classify_segment(segments)
+        if structured_state is True:
+            return True
+        if structured_state is False:
+            return False
+
+        # Do not stringify structured objects here. Their repr contains class
+        # names and memory addresses, which makes a pure At look like text.
+        segment_text = ""
+        try:
+            segment_text = MyPlugin._moderation_segments_to_text(segments)
+        except Exception:
+            pass
+        if re.fullmatch(
+            r"\s*At(?:\s*[:：,]?\s*\d{5,})?\s*",
+            segment_text,
+            flags=re.IGNORECASE,
+        ):
+            segment_text = ""
+        combined = "\n".join(
+            str(value or "") for value in (message, raw_message, segment_text)
+        )
+        if not combined.strip():
+            return False
+        at_pattern = re.compile(
+            r"(?:\[CQ:at[^\]]*\]|\[At[^\]]*\]|"
+            r"(?:^|\s)At(?:\s*[:：,]\s*|\s+)\d{5,}(?=\s|$)|"
+            r"@\d{5,})",
+            re.IGNORECASE | re.MULTILINE,
+        )
+        if not at_pattern.search(combined):
+            return False
+        remainder = at_pattern.sub("", combined)
+        return not re.sub(r"\s+", "", remainder)
+
+    @staticmethod
     def _moderation_contains_image(segments: object) -> bool:
         """Return whether a message contains an image-like segment."""
         if isinstance(segments, (list, tuple)):
@@ -10685,17 +10761,17 @@ class MyPlugin(Star):
         if sender_id == self._get_event_self_id(event):
             return True
 
-        # A normal OneBot group message already carries the account that
-        # received it.  Treat that explicit self ID as authoritative instead
-        # of probing ``get_login_info`` for every downstream listener.  The
-        # old fallback could hold the event loop on a slow NapCat request for
-        # several seconds per listener, delaying an otherwise ready reply.
+        # A group event can carry a stale or unrelated ``self_id`` when
+        # NapCat echoes a message. Do not conclude that the sender is a
+        # normal member solely because that field differs; continue with the
+        # connected account/config/login check below.
         event_self_id = self._get_event_self_id(event)
-        if event_self_id:
-            group_getter = getattr(self, "_get_group_id_from_event", None)
-            group_id = group_getter(event) if callable(group_getter) else ""
-            if group_id:
-                return False
+        if event_self_id and sender_id != event_self_id:
+            logger.debug(
+                "[机器人自身消息检查] 事件 self_id 与发送者不一致，继续核对登录账号: self_id=%s sender=%s",
+                event_self_id,
+                sender_id,
+            )
 
         bot = getattr(event, "bot", None)
         candidates = []
@@ -27566,6 +27642,21 @@ class MyPlugin(Star):
                 moderation_raw_message = re.sub(
                     r"\[CQ:image[^\]]*\]", " ", moderation_raw_message, flags=re.I
                 )
+        try:
+            at_only_message = self._is_at_only_moderation_message(
+                moderation_message,
+                moderation_raw_message,
+                event.get_messages(),
+            )
+        except Exception:
+            at_only_message = False
+        if at_only_message:
+            logger.info(
+                "[撤回系统] 跳过纯艾特消息 | 群:%s 用户:%s",
+                group_id,
+                user_id,
+            )
+            return
         if not moderation_message.strip() and not moderation_raw_message.strip():
             return
 
@@ -27727,8 +27818,27 @@ class MyPlugin(Star):
                     getattr(delete_error, "retcode", None),
                 )
                 return
+            # AstrBot's aiocqhttp high-level ``delete_msg`` returns the
+            # OneBot ``data`` field rather than the complete response.  QQ
+            # commonly returns ``data: null`` for a successful recall, so the
+            # adapter exposes ``None`` even though no exception was raised.
+            # An exception is handled above; here an empty return is therefore
+            # a completed action, not a platform rejection.
+            if delete_result is None:
+                delete_result = {"status": "ok", "retcode": 0}
             if not self._api_result_succeeded(delete_result):
-                logger.warning("自动撤回被平台拒绝: group=%s message_id=%s", group_id, message_id)
+                detail_fn = getattr(self, "_onebot_failure_detail", None)
+                detail = (
+                    detail_fn(delete_result)
+                    if callable(detail_fn)
+                    else str(delete_result or "QQ 平台未返回具体原因")
+                )
+                logger.warning(
+                    "自动撤回被平台拒绝: group=%s message_id=%s reason=%s",
+                    group_id,
+                    message_id,
+                    detail,
+                )
                 return
             logger.debug(f"自动撤回: 群组 {group_id} 撤回消息 {message_id}, 原因: {recall_reason}")
             
