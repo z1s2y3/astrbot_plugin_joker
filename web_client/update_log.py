@@ -10,6 +10,15 @@ from copy import deepcopy
 # remains available even on a freshly installed portal.
 UPDATE_LOG: tuple[dict[str, object], ...] = (
     {
+        "version": "1.11.451",
+        "date": "2026-11-10",
+        "title": "降低心跳写锁",
+        "items": (
+            "Windows 心跳按间隔更新群在线时间，避免每次轮询批量写入全部群记录。",
+            "减少多群、多电脑同时同步时的数据库死锁和网页等待。",
+        ),
+    },
+    {
         "version": "1.11.450",
         "date": "2026-11-10",
         "title": "网页同步响应优化",

@@ -74,6 +74,18 @@ LOCAL_SOURCE_PARTIAL_ERROR = "auth_source_incomplete"
 logger = logging.getLogger(__name__)
 
 
+def _touch_liveness_if_stale(row: object, now: datetime, *, interval_seconds: int = 10) -> bool:
+    """Avoid rewriting heartbeat timestamps on every Windows poll."""
+
+    current = getattr(row, "last_seen_at", None)
+    if isinstance(current, datetime) and current.tzinfo is not None:
+        current = current.astimezone(timezone.utc).replace(tzinfo=None)
+    if current is not None and current > now - timedelta(seconds=interval_seconds):
+        return False
+    setattr(row, "last_seen_at", now)
+    return True
+
+
 def _secure_projection(config: object, previous: object = None) -> dict[str, Any]:
     """Keep plugin WebSocket API Keys encrypted in portal snapshots."""
     projected = project_group_config(config if isinstance(config, dict) else {})
@@ -3377,8 +3389,8 @@ def apply_bot_exchange(
                 )
                 db.add(state)
                 states[(group_id, normalized_client_id)] = state
-            state.last_seen_at = now
-            snapshot.last_seen_at = now
+            _touch_liveness_if_stale(state, now)
+            _touch_liveness_if_stale(snapshot, now)
         db.flush()
         for group_id in discovered_portal_group_ids:
             snapshot = snapshots.get(group_id)
@@ -3475,8 +3487,8 @@ def apply_bot_exchange(
                 state = _group_client_sync(db, snapshot.group_id, normalized_client_id)
                 if state is None:
                     continue
-                state.last_seen_at = now
-                snapshot.last_seen_at = now
+                _touch_liveness_if_stale(state, now)
+                _touch_liveness_if_stale(snapshot, now)
                 if auth_source_complete and snapshot.sync_status in {
                     LOCAL_SOURCE_PROTECTED_STATUS,
                     LOCAL_SOURCE_PARTIAL_STATUS,
@@ -3503,7 +3515,7 @@ def apply_bot_exchange(
                     )
                 continue
             snapshot.client_id = client_id[:64]
-            snapshot.last_seen_at = now
+            _touch_liveness_if_stale(snapshot, now)
             if auth_source_complete and snapshot.sync_status in {
                 LOCAL_SOURCE_PROTECTED_STATUS,
                 LOCAL_SOURCE_PARTIAL_STATUS,
@@ -3551,7 +3563,7 @@ def apply_bot_exchange(
             state = _group_client_sync(db, group_id, normalized_client_id)
             if state is None:
                 continue
-            state.last_seen_at = now
+            _touch_liveness_if_stale(state, now)
             snapshot_owner = get_snapshot(db, group_id)
             if snapshot_owner is not None and snapshot_owner.client_id != normalized_client_id:
                 continue
@@ -3662,7 +3674,7 @@ def apply_bot_exchange(
                 )
 
         snapshot.client_id = client_id[:64]
-        snapshot.last_seen_at = now
+        _touch_liveness_if_stale(snapshot, now)
         if has_config:
             # The client included a current config projection for this group,
             # so its durable browser refresh has been fulfilled.  An auth-only
@@ -3736,7 +3748,7 @@ def apply_bot_exchange(
             snapshot = get_snapshot(db, group_id)
             if snapshot is None:
                 continue
-            state.last_seen_at = now
+            _touch_liveness_if_stale(state, now)
             if snapshot.revision <= _safe_bigint(state.applied_revision):
                 continue
             if group_id in change_ids:
