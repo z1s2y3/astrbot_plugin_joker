@@ -1239,6 +1239,16 @@ def _process_member_directory_upload(
     }
 
 
+def _portal_group_upload_allowed(group_id: str) -> bool:
+    """Check group authorization before a large runtime upload is queued."""
+
+    db = get_session_factory()()
+    try:
+        return remote_store.has_group_access(db, group_id)
+    finally:
+        db.close()
+
+
 def _process_message_cache_upload(
     client_id: str,
     group_id: str,
@@ -4173,6 +4183,19 @@ def create_app() -> FastAPI:
                 },
                 status_code=409,
             )
+        if scope_type != "private" and not await run_in_threadpool(
+            _portal_group_upload_allowed, group_id
+        ):
+            app.state.message_cache_rejected_until[rejected_key] = now + 30.0
+            return JSONResponse(
+                {
+                    "detail": "该群尚未绑定当前 Windows 执行端",
+                    "code": "group_client_not_bound",
+                    "status": "rejected",
+                    "stored_count": 0,
+                },
+                status_code=409,
+            )
         levels_pending = bool(payload.get("levels_pending", False))
         snapshot_complete = bool(payload.get("snapshot_complete", True))
         try:
@@ -4293,6 +4316,19 @@ def create_app() -> FastAPI:
                 },
                 status_code=409,
             )
+        if scope_type != "private" and not await run_in_threadpool(
+            _portal_group_upload_allowed, group_id
+        ):
+            app.state.message_cache_rejected_until[rejected_key] = now + 30.0
+            return JSONResponse(
+                {
+                    "detail": "该群尚未绑定当前 Windows 执行端",
+                    "code": "group_client_not_bound",
+                    "status": "rejected",
+                    "stored_count": 0,
+                },
+                status_code=409,
+            )
         if len(app.state.message_cache_rejected_until) > 10000:
             app.state.message_cache_rejected_until = {
                 key: deadline
@@ -4320,7 +4356,7 @@ def create_app() -> FastAPI:
             )
         if result.get("status") != "ok":
             if result.get("code") == "group_client_not_bound":
-                app.state.message_cache_rejected_until[rejected_key] = now + 5.0
+                app.state.message_cache_rejected_until[rejected_key] = now + 30.0
             return JSONResponse(
                 {"detail": "该群尚未绑定当前 Windows 执行端", **result},
                 status_code=409,

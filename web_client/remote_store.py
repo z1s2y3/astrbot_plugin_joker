@@ -2946,6 +2946,19 @@ def known_group_ids(db: Session) -> set[str]:
     return {str(value) for value in db.scalars(select(GroupConfigSnapshot.group_id))}
 
 
+def has_group_access(db: Session, group_id: object) -> bool:
+    """Return whether a QQ group is authorized on the portal."""
+
+    normalized_group_id = str(group_id or "").strip()
+    return bool(
+        GROUP_ID_RE.fullmatch(normalized_group_id)
+        and db.scalar(
+            select(GroupAccess.id).where(GroupAccess.group_id == normalized_group_id)
+        )
+        is not None
+    )
+
+
 def _group_client_sync(
     db: Session, group_id: str, client_id: str, *, for_update: bool = False
 ) -> GroupClientSync | None:
