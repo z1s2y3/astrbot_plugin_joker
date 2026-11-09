@@ -1147,20 +1147,12 @@ def _process_sync_runtime_summaries(
             continue
         db = get_session_factory()()
         try:
-            remote_store.apply_bot_exchange(
-                db,
-                client_id,
-                [],
-                [group_id],
-                authoritative_group_ids=False,
-                runtime_summaries={group_id: raw_runtime},
-                config_source_complete=True,
-                auth_source_complete=True,
-                sync_scope_complete=True,
-                game_auth_source_complete=False,
-                local_group_ids=[group_id],
-            )
-            db.commit()
+            if remote_store.store_runtime_summary(
+                db, client_id, group_id, raw_runtime
+            ):
+                db.commit()
+            else:
+                db.rollback()
         except Exception:
             db.rollback()
             logger.warning(
@@ -2291,6 +2283,9 @@ def create_app() -> FastAPI:
     # can sync in parallel, while writes for the same group remain ordered.
     app.state.sync_group_locks = {}
     app.state.sync_group_locks_guard = asyncio.Lock()
+    # Runtime panels are informational and can be refreshed in short batches.
+    # Do not let several Windows heartbeats rebuild every group panel at once.
+    app.state.runtime_summary_last_queued = {}
     # Repeated uploads from an unbound Windows client should not occupy a
     # database worker for every retry. Keep this short so a newly authorized
     # group becomes eligible quickly.
@@ -3958,12 +3953,36 @@ def create_app() -> FastAPI:
             ]
             if str(value or "").strip()
         }
-        def queue_runtime_summaries() -> None:
-            if config_source_complete and runtime_summaries:
+        def queue_runtime_summaries(sync_result: object) -> None:
+            if not (config_source_complete and runtime_summaries):
+                return
+            accepted_ids = {
+                str(group_id).strip()
+                for group_id in (
+                    sync_result.get("runtime_accepted_group_ids", [])
+                    if isinstance(sync_result, dict)
+                    else []
+                )
+                if remote_store.GROUP_ID_RE.fullmatch(str(group_id).strip())
+            }
+            now = unix_time()
+            selected = {
+                str(group_id).strip(): runtime
+                for group_id, runtime in runtime_summaries.items()
+                if str(group_id).strip() in accepted_ids
+                and now
+                - app.state.runtime_summary_last_queued.get(
+                    str(group_id).strip(), 0.0
+                )
+                >= 20.0
+            }
+            if selected:
+                for group_id in selected:
+                    app.state.runtime_summary_last_queued[group_id] = now
                 background_tasks.add_task(
                     _process_sync_runtime_summaries,
                     client_id,
-                    runtime_summaries,
+                    selected,
                 )
         try:
             result = await _run_serialized_sync_write(
@@ -3986,7 +4005,7 @@ def create_app() -> FastAPI:
                 timeout=settings.sync_exchange_timeout_seconds,
                 lock_keys=exchange_lock_keys,
             )
-            queue_runtime_summaries()
+            queue_runtime_summaries(result)
             game_auth_rows = [
                 {
                     "group_id": item.get("group_id"),
@@ -4048,7 +4067,7 @@ def create_app() -> FastAPI:
                     )
                     if isinstance(fallback, dict):
                         fallback["runtime_deferred"] = True
-                        queue_runtime_summaries()
+                        queue_runtime_summaries(fallback)
                         return fallback
                 except Exception:
                     logger.exception(

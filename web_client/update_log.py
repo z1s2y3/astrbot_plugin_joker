@@ -10,6 +10,15 @@ from copy import deepcopy
 # remains available even on a freshly installed portal.
 UPDATE_LOG: tuple[dict[str, object], ...] = (
     {
+        "version": "1.11.456",
+        "date": "2026-11-10",
+        "title": "运行面板后台限流",
+        "items": (
+            "群运行面板使用独立轻量写入，不再重复执行完整配置同步。",
+            "Windows 常规运行面板每 20 秒最多上传一批，配置保存和授权保持即时处理。",
+        ),
+    },
+    {
         "version": "1.11.455",
         "date": "2026-11-10",
         "title": "减少多群重复锁",

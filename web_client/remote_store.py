@@ -1370,6 +1370,114 @@ def get_runtime_json(db: Session, group_id: str) -> Any:
     )
 
 
+def store_runtime_summary(
+    db: Session,
+    client_id: object,
+    group_id: object,
+    raw_runtime: object,
+) -> bool:
+    """Persist one accepted runtime panel without running a full config exchange."""
+
+    normalized_client_id = str(client_id or "").strip()[:64]
+    normalized_group_id = str(group_id or "").strip()
+    if not normalized_client_id or not GROUP_ID_RE.fullmatch(normalized_group_id):
+        return False
+    if db.scalar(
+        select(GroupAccess.id).where(GroupAccess.group_id == normalized_group_id)
+    ) is None:
+        return False
+    snapshot = get_snapshot(db, normalized_group_id, for_update=True)
+    if snapshot is None or (
+        snapshot.client_id and snapshot.client_id != normalized_client_id
+    ):
+        return False
+
+    incoming_runtime = _safe_runtime_summary(raw_runtime)
+    previous_runtime = getattr(snapshot, "runtime_json", None)
+    if isinstance(previous_runtime, str):
+        try:
+            previous_runtime = json.loads(previous_runtime)
+        except (TypeError, ValueError, json.JSONDecodeError):
+            previous_runtime = {}
+    previous_runtime = previous_runtime if isinstance(previous_runtime, dict) else {}
+
+    # A direct message-cache upload can arrive before the normal heartbeat.
+    # Preserve the newer rows so a stale summary cannot erase them.
+    previous_cache = previous_runtime.get("message_cache")
+    incoming_cache = incoming_runtime.get("message_cache")
+    previous_message_rows = (
+        previous_cache.get("records", []) if isinstance(previous_cache, dict) else []
+    )
+    incoming_message_rows = (
+        incoming_cache.get("records", []) if isinstance(incoming_cache, dict) else []
+    )
+    previous_message_keys = {
+        _runtime_message_key(row)
+        for row in (
+            previous_message_rows if isinstance(previous_message_rows, list) else []
+        )
+        if isinstance(row, dict) and _runtime_message_key(row)
+    }
+    if isinstance(previous_message_rows, list) and previous_message_rows:
+        combined_rows = (
+            list(incoming_message_rows)
+            if isinstance(incoming_message_rows, list)
+            else []
+        )
+        combined_rows.extend(previous_message_rows)
+        merged_rows: list[dict[str, Any]] = []
+        seen_message_keys: set[str] = set()
+        for row in sorted(
+            (item for item in combined_rows if isinstance(item, dict)),
+            key=lambda item: _safe_bigint(item.get("timestamp"), 0),
+            reverse=True,
+        ):
+            key = _runtime_message_key(row)
+            if not key or key in seen_message_keys:
+                continue
+            seen_message_keys.add(key)
+            merged_rows.append(row)
+        incoming_runtime["message_cache"] = {
+            **(incoming_cache if isinstance(incoming_cache, dict) else {}),
+            "available": True,
+            "count": len(merged_rows),
+            "records": merged_rows,
+        }
+
+    persisted_cache = incoming_runtime.get("message_cache")
+    persisted_message_rows = (
+        persisted_cache.get("records", []) if isinstance(persisted_cache, dict) else []
+    )
+    backfill_pending = not bool(
+        previous_runtime.get("_message_event_backfill_v1", False)
+    )
+    rows_for_event_store = [
+        row
+        for row in (
+            persisted_message_rows if isinstance(persisted_message_rows, list) else []
+        )
+        if isinstance(row, dict)
+        and (
+            backfill_pending
+            or _runtime_message_key(row) not in previous_message_keys
+        )
+    ]
+    for offset in range(0, len(rows_for_event_store), 100):
+        _persist_group_message_events(
+            db,
+            normalized_client_id,
+            normalized_group_id,
+            rows_for_event_store[offset : offset + 100],
+        )
+    if isinstance(persisted_message_rows, list):
+        incoming_runtime["_message_event_backfill_v1"] = True
+    if incoming_runtime == previous_runtime:
+        return True
+    snapshot.runtime_json = incoming_runtime
+    snapshot.runtime_updated_at = utcnow()
+    return True
+
+
 def store_runtime_members(
     db: Session,
     client_id: str,

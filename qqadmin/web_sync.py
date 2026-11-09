@@ -263,6 +263,10 @@ _DATABASE_SNAPSHOT_PENDING_FILE = "database_snapshot_upload_pending.json"
 # group on a busy bot.  Rotate a small bounded subset on normal heartbeats;
 # a group whose editable configuration changed is always prioritised.
 _MAX_RUNTIME_SUMMARY_GROUPS_PER_EXCHANGE = 2
+# Live panels are useful, but rebuilding member, audit and message summaries
+# on every heartbeat is needlessly expensive when several Windows clients are
+# connected. Edits and explicit runtime changes still bypass this interval.
+_RUNTIME_SUMMARY_REFRESH_SECONDS = 20.0
 # Console records are useful for the Linux panel but do not belong on the
 # critical configuration heartbeat.  Sending a small ordered page lets a busy
 # portal catch up without making one exchange wait on hundreds of old rows.
@@ -1749,6 +1753,7 @@ class PortalSyncClient:
         # prevents a large installation from spending its entire heartbeat in
         # local runtime queries before it can pull one requested web config.
         self._runtime_summary_cursor = 0
+        self._next_runtime_summary_at = 0.0
         self._uploaded_console_event_ids: set[str] = set()
         # A successful HTTP exchange is not by itself a console-event ACK:
         # the portal deliberately discards events while its console switch is
@@ -4472,13 +4477,29 @@ class PortalSyncClient:
         # batch and always put groups with a config upload first.  This keeps
         # a page save/request responsive on Windows installations with many
         # configured groups.
+        runtime_priority_group_ids = {
+            self._valid_failure_group_id(item.get("group_id"))
+            for item in changed_groups
+            if isinstance(item, dict)
+        } & scoped_config_group_ids
+        runtime_pending_group_ids = (
+            self._runtime_dirty_group_ids | self._runtime_pending_ack_group_ids
+        ) & scoped_config_group_ids
+        runtime_immediate = bool(
+            runtime_priority_group_ids
+            or runtime_pending_group_ids
+        )
+        runtime_refresh_due = (
+            runtime_immediate
+            or time.monotonic() >= self._next_runtime_summary_at
+        )
         runtime_group_ids = (
             self._runtime_summary_group_ids(
                 scoped_config_group_ids,
                 changed_groups,
-                self._runtime_dirty_group_ids | self._runtime_pending_ack_group_ids,
+                runtime_pending_group_ids,
             )
-            if config_source_complete and not scope_probe
+            if config_source_complete and not scope_probe and runtime_refresh_due
             else []
         )
         current_runtime_summaries = {
@@ -4728,6 +4749,10 @@ class PortalSyncClient:
         # carry the same summaries instead of silently dropping them.
         if config_source_complete:
             self._last_runtime_summaries.update(runtime_summaries)
+            if runtime_group_ids:
+                self._next_runtime_summary_at = (
+                    time.monotonic() + _RUNTIME_SUMMARY_REFRESH_SECONDS
+                )
             # A dirty marker means the summary was requested, not that its
             # value necessarily changed.  Clear it after a successful
             # exchange so a deleted record is not rebuilt on every heartbeat.
