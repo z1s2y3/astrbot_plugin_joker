@@ -1667,7 +1667,7 @@ class PortalSyncClient:
         self.scum_query_url = str(scum_query_url or "").strip().rstrip("/")
         self.token = str(token or "").strip()
         # Keep web saves responsive without creating a tight polling loop.
-        self.interval_seconds = max(2, min(3600, int(interval_seconds or 5)))
+        self.interval_seconds = max(10, min(3600, int(interval_seconds or 10)))
         # The server trims its environment value too.  Normalizing copied
         # values here avoids an invisible trailing newline producing a wholly
         # different HMAC fingerprint for every activated card.

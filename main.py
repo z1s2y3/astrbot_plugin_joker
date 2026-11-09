@@ -3136,11 +3136,11 @@ class MyPlugin(Star):
                         self._load_game_executor_settings(get_nested)
                         try:
                             self.web_sync_interval = max(
-                                2,
-                                int(get_nested("web_sync", "interval_seconds", default=5)),
+                                10,
+                                int(get_nested("web_sync", "interval_seconds", default=10)),
                             )
                         except (TypeError, ValueError):
-                            self.web_sync_interval = 5
+                            self.web_sync_interval = 10
                         for attribute, section, key, default_value in (
                             ("qqadmin_enable_mute", "mute", "enable_mute", False),
                             ("qqadmin_enable_kick", "kick", "enable_kick", False),
@@ -3223,10 +3223,10 @@ class MyPlugin(Star):
         self._load_game_executor_settings(get_nested)
         try:
             self.web_sync_interval = max(
-                2, int(get_nested("web_sync", "interval_seconds", default=5))
+                10, int(get_nested("web_sync", "interval_seconds", default=10))
             )
         except (TypeError, ValueError):
-            self.web_sync_interval = 5
+            self.web_sync_interval = 10
         
         # SCUM查询
         self.enable_query = get_nested("scum", "enable_query", default=True)

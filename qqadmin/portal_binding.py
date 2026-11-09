@@ -243,8 +243,8 @@ def _safe_interval(value: object) -> int:
     try:
         interval = int(value)  # type: ignore[arg-type]
     except (TypeError, ValueError, OverflowError):
-        interval = 5
-    return max(3, min(3600, interval))
+        interval = 10
+    return max(10, min(3600, interval))
 
 
 def _normalized_portal_url(value: object) -> tuple[str, str]:
@@ -363,7 +363,7 @@ class PortalBinding:
     sync_token: str = ""
     card_pepper: str = ""
     enabled: bool = False
-    interval_seconds: int = 5
+    interval_seconds: int = 10
 
     @classmethod
     def from_plugin_config(cls, plugin_config: Mapping[str, object] | None) -> "PortalBinding":
@@ -378,7 +378,7 @@ class PortalBinding:
             card_pepper=str(_read_mapping_value(web_sync, "card_pepper", "") or "").strip(),
             enabled=_as_bool(_read_mapping_value(web_sync, "enabled", False)),
             interval_seconds=_safe_interval(
-                _read_mapping_value(web_sync, "interval_seconds", 5)
+                _read_mapping_value(web_sync, "interval_seconds", 10)
             ),
         )
 

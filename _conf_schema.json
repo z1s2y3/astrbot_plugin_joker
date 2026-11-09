@@ -131,8 +131,8 @@
       "interval_seconds": {
         "description": "同步检查间隔（秒）",
         "type": "int",
-        "default": 5,
-        "hint": "最小 3 秒，默认 5 秒。可在 QQ 中使用 /网页绑定状态 和 /测试网页连接 查看状态。"
+        "default": 10,
+        "hint": "最小 10 秒，默认 10 秒。保存配置和手动拉取会立即同步；可在 QQ 中使用 /网页绑定状态 和 /测试网页连接 查看状态。"
       },
       "show_connection_events": {
         "description": "Windows CMD connection status",
