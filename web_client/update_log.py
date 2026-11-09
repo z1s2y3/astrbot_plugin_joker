@@ -10,6 +10,15 @@ from copy import deepcopy
 # remains available even on a freshly installed portal.
 UPDATE_LOG: tuple[dict[str, object], ...] = (
     {
+        "version": "1.11.452",
+        "date": "2026-11-10",
+        "title": "隔离无关同步请求",
+        "items": (
+            "未绑定执行端不再锁定其他电脑拥有的群配置。",
+            "成员目录和消息缓存的重复拒绝请求短暂缓存，减少无效数据库访问。",
+        ),
+    },
+    {
         "version": "1.11.451",
         "date": "2026-11-10",
         "title": "降低心跳写锁",

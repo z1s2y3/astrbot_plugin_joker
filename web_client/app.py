@@ -4153,6 +4153,19 @@ def create_app() -> FastAPI:
         client_id, client_id_error = _extract_sync_client_id(request, payload)
         if client_id_error is not None:
             return client_id_error
+        rejected_key = f"directory:{client_id}:{scope_type}:{group_id or scope_id}"
+        rejected_until = app.state.message_cache_rejected_until.get(rejected_key, 0.0)
+        now = unix_time()
+        if rejected_until > now:
+            return JSONResponse(
+                {
+                    "detail": "该群尚未绑定当前 Windows 执行端",
+                    "code": "group_client_not_bound",
+                    "status": "rejected",
+                    "stored_count": 0,
+                },
+                status_code=409,
+            )
         levels_pending = bool(payload.get("levels_pending", False))
         snapshot_complete = bool(payload.get("snapshot_complete", True))
         try:
@@ -4184,7 +4197,8 @@ def create_app() -> FastAPI:
                 expected_count,
             )
         elif isinstance(result, dict) and result.get("status") == "rejected":
-            logger.warning(
+            app.state.message_cache_rejected_until[rejected_key] = now + 15.0
+            logger.debug(
                 "Linux 未保存 Windows 群成员数据 group=%s code=%s received=%s",
                 group_id or scope_id,
                 result.get("code", "group_client_not_bound"),

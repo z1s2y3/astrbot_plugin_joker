@@ -1,5 +1,5 @@
 param(
-    [string]$Version = "1.11.451",
+    [string]$Version = "1.11.452",
     [switch]$PreservePreviousReleases
 )
 

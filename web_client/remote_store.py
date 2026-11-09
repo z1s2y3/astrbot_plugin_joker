@@ -3325,6 +3325,23 @@ def apply_bot_exchange(
     discovered_portal_group_ids = normalized_local_group_ids.intersection(
         portal_group_ids
     )
+    if discovered_portal_group_ids and normalized_client_id:
+        # A client may report groups that belong to another Windows instance.
+        # Do not lock or touch those snapshots just to reject the upload.
+        ownership_rows = db.execute(
+            select(
+                GroupConfigSnapshot.group_id,
+                GroupConfigSnapshot.client_id,
+            ).where(
+                GroupConfigSnapshot.group_id.in_(discovered_portal_group_ids)
+            )
+        )
+        discovered_portal_group_ids = {
+            str(group_id)
+            for group_id, owner_id in ownership_rows.all()
+            if not str(owner_id or "").strip()
+            or str(owner_id).strip() == normalized_client_id
+        }
     client_portal_group_ids = set(discovered_portal_group_ids)
     if normalized_client_id and known_portal_group_ids:
         for group_id in known_portal_group_ids:
@@ -3560,6 +3577,8 @@ def apply_bot_exchange(
         is_portal_group = group_id in portal_group_ids
         state = None
         if is_portal_group:
+            if group_id not in client_portal_group_ids:
+                continue
             state = _group_client_sync(db, group_id, normalized_client_id)
             if state is None:
                 continue
@@ -3741,7 +3760,7 @@ def apply_bot_exchange(
             change_ids.add(group_id)
 
     if normalized_client_id:
-        for group_id in sorted(portal_group_ids):
+        for group_id in sorted(client_portal_group_ids):
             state = _group_client_sync(db, group_id, normalized_client_id)
             if state is None:
                 continue
