@@ -10,6 +10,15 @@ from copy import deepcopy
 # remains available even on a freshly installed portal.
 UPDATE_LOG: tuple[dict[str, object], ...] = (
     {
+        "version": "1.11.458",
+        "date": "2026-11-10",
+        "title": "减少同步快照读取",
+        "items": (
+            "常规心跳只读取群同步状态，不再批量加载群配置和运行记录。",
+            "保存配置、手动拉取和待应用变更仍按单群读取完整数据。",
+        ),
+    },
+    {
         "version": "1.11.457",
         "date": "2026-11-10",
         "title": "分离多电脑同步队列",

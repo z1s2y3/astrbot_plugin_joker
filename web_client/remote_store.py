@@ -15,7 +15,7 @@ import time
 from threading import Lock
 
 from sqlalchemy import and_, delete, desc, false, func, or_, select
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, load_only
 
 from .models import (
     GameAuthorization,
@@ -3472,15 +3472,31 @@ def apply_bot_exchange(
         }
     client_portal_group_ids = set(discovered_portal_group_ids)
     if normalized_client_id and known_portal_group_ids:
-        for group_id in known_portal_group_ids:
-            snapshot = get_snapshot(db, group_id)
-            if snapshot is not None and snapshot.client_id == normalized_client_id:
-                client_portal_group_ids.add(group_id)
+        client_portal_group_ids.update(
+            str(group_id)
+            for group_id in db.scalars(
+                select(GroupConfigSnapshot.group_id).where(
+                    GroupConfigSnapshot.group_id.in_(known_portal_group_ids),
+                    GroupConfigSnapshot.client_id == normalized_client_id,
+                )
+            )
+        )
     if normalized_client_id and client_portal_group_ids:
         snapshots = {
             str(snapshot.group_id): snapshot
             for snapshot in db.scalars(
                 select(GroupConfigSnapshot)
+                .options(
+                    load_only(
+                        GroupConfigSnapshot.id,
+                        GroupConfigSnapshot.group_id,
+                        GroupConfigSnapshot.revision,
+                        GroupConfigSnapshot.applied_revision,
+                        GroupConfigSnapshot.sync_status,
+                        GroupConfigSnapshot.client_id,
+                        GroupConfigSnapshot.last_seen_at,
+                    )
+                )
                 .where(GroupConfigSnapshot.group_id.in_(client_portal_group_ids))
             )
         }
@@ -3581,11 +3597,15 @@ def apply_bot_exchange(
     # keeps the stable client association and an actionable state.
     if authoritative_group_ids and client_id:
         owned_snapshots = db.scalars(
-            select(GroupConfigSnapshot).where(
-                GroupConfigSnapshot.client_id == client_id[:64]
-            ).order_by(GroupConfigSnapshot.group_id).with_for_update().execution_options(
-                populate_existing=True
+            select(GroupConfigSnapshot)
+            .where(
+                GroupConfigSnapshot.client_id == client_id[:64],
+                ~GroupConfigSnapshot.group_id.in_(normalized_known_ids),
+                ~GroupConfigSnapshot.group_id.in_(portal_group_ids),
             )
+            .order_by(GroupConfigSnapshot.group_id)
+            .with_for_update()
+            .execution_options(populate_existing=True)
         )
         for snapshot in list(owned_snapshots):
             if (
@@ -3618,11 +3638,22 @@ def apply_bot_exchange(
 
     if config_source_complete and client_portal_group_ids:
         for snapshot in db.scalars(
-            select(GroupConfigSnapshot).where(
-                GroupConfigSnapshot.group_id.in_(client_portal_group_ids)
-            ).order_by(GroupConfigSnapshot.group_id).with_for_update().execution_options(
-                populate_existing=True
+            select(GroupConfigSnapshot)
+            .options(
+                load_only(
+                    GroupConfigSnapshot.id,
+                    GroupConfigSnapshot.group_id,
+                    GroupConfigSnapshot.revision,
+                    GroupConfigSnapshot.applied_revision,
+                    GroupConfigSnapshot.sync_status,
+                    GroupConfigSnapshot.sync_error,
+                    GroupConfigSnapshot.last_seen_at,
+                )
             )
+            .where(GroupConfigSnapshot.group_id.in_(client_portal_group_ids))
+            .order_by(GroupConfigSnapshot.group_id)
+            .with_for_update()
+            .execution_options(populate_existing=True)
         ):
             snapshot.revision = _safe_bigint(snapshot.revision)
             snapshot.applied_revision = _safe_bigint(snapshot.applied_revision)
@@ -3646,6 +3677,9 @@ def apply_bot_exchange(
                     _safe_bigint(state.applied_revision) < snapshot.revision
                     or not auth_source_complete
                 ):
+                    snapshot = get_snapshot(db, snapshot.group_id, for_update=True)
+                    if snapshot is None:
+                        continue
                     changes.append(
                         {
                             "group_id": snapshot.group_id,
@@ -3709,9 +3743,6 @@ def apply_bot_exchange(
             if state is None:
                 continue
             _touch_liveness_if_stale(state, now)
-            snapshot_owner = get_snapshot(db, group_id)
-            if snapshot_owner is not None and snapshot_owner.client_id != normalized_client_id:
-                continue
         if has_game_auth and not (has_config or has_auth):
             continue
         # Re-read under the same row lock even when the heartbeat query above
