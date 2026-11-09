@@ -1293,9 +1293,48 @@ def store_runtime_members(
 ) -> int:
     """Store a refreshed QQ directory without waiting for a full exchange."""
 
-    snapshot = get_snapshot(db, str(group_id), for_update=True)
-    if snapshot is None or str(snapshot.client_id or "") != str(client_id or ""):
+    normalized_client_id = str(client_id or "").strip()[:64]
+    normalized_group_id = str(group_id or "").strip()
+    if not normalized_client_id or not GROUP_ID_RE.fullmatch(normalized_group_id):
         return 0
+    snapshot = get_snapshot(db, normalized_group_id, for_update=True)
+    if snapshot is None:
+        # A member refresh can arrive before the first heartbeat has created
+        # the projection row.  Only create it for a group that is already
+        # authorized on the portal; an unbound QQ group must remain rejected.
+        if db.scalar(
+            select(GroupAccess.id).where(GroupAccess.group_id == normalized_group_id)
+        ) is None:
+            return 0
+        snapshot = GroupConfigSnapshot(
+            group_id=normalized_group_id,
+            revision=0,
+            applied_revision=0,
+            config_json={"group_id": normalized_group_id, "features": {}},
+            sync_status="synced",
+            client_id=normalized_client_id,
+            last_seen_at=utcnow(),
+        )
+        db.add(snapshot)
+        db.flush()
+    elif str(snapshot.client_id or "") != normalized_client_id:
+        # A group may be used by more than one Windows installation.  Keep
+        # the canonical config owner, but register the current execution
+        # client so its runtime member directory is accepted as well.
+        state = _group_client_sync(
+            db, normalized_group_id, normalized_client_id, for_update=True
+        )
+        if state is None:
+            db.add(
+                GroupClientSync(
+                    group_id=normalized_group_id,
+                    client_id=normalized_client_id,
+                    applied_revision=_safe_bigint(snapshot.revision),
+                    last_seen_at=utcnow(),
+                )
+            )
+            db.flush()
+        snapshot.last_seen_at = utcnow()
     raw_runtime = getattr(snapshot, "runtime_json", None)
     if isinstance(raw_runtime, str):
         try:
@@ -1666,9 +1705,40 @@ def store_runtime_messages(
 
     normalized_client_id = str(client_id or "").strip()[:64]
     normalized_group_id = str(group_id or "").strip()
-    snapshot = get_snapshot(db, normalized_group_id, for_update=True)
-    if snapshot is None or str(snapshot.client_id or "") != normalized_client_id:
+    if not normalized_client_id or not GROUP_ID_RE.fullmatch(normalized_group_id):
         return 0
+    snapshot = get_snapshot(db, normalized_group_id, for_update=True)
+    if snapshot is None:
+        if db.scalar(
+            select(GroupAccess.id).where(GroupAccess.group_id == normalized_group_id)
+        ) is None:
+            return 0
+        snapshot = GroupConfigSnapshot(
+            group_id=normalized_group_id,
+            revision=0,
+            applied_revision=0,
+            config_json={"group_id": normalized_group_id, "features": {}},
+            sync_status="synced",
+            client_id=normalized_client_id,
+            last_seen_at=utcnow(),
+        )
+        db.add(snapshot)
+        db.flush()
+    elif str(snapshot.client_id or "") != normalized_client_id:
+        state = _group_client_sync(
+            db, normalized_group_id, normalized_client_id, for_update=True
+        )
+        if state is None:
+            db.add(
+                GroupClientSync(
+                    group_id=normalized_group_id,
+                    client_id=normalized_client_id,
+                    applied_revision=_safe_bigint(snapshot.revision),
+                    last_seen_at=utcnow(),
+                )
+            )
+            db.flush()
+        snapshot.last_seen_at = utcnow()
     raw_runtime = getattr(snapshot, "runtime_json", None)
     if isinstance(raw_runtime, str):
         try:
@@ -2334,7 +2404,9 @@ def missing_card_sync_message(db: Session, offline_after_seconds: int) -> str:
 
 
 def sync_state(
-    snapshot: GroupConfigSnapshot | None, offline_after_seconds: int
+    snapshot: GroupConfigSnapshot | None,
+    offline_after_seconds: int,
+    client_last_seen_at: datetime | None = None,
 ) -> dict[str, Any]:
     # Early portal migrations could leave these counters NULL or as strings.
     # Normalize them before comparing so a legacy row cannot turn the group
@@ -2351,7 +2423,16 @@ def sync_state(
     # button successfully but the page immediately rendered it as available
     # again and gave no indication that Windows still had work queued.
     refresh_requested = bool(getattr(snapshot, "refresh_requested", False)) if snapshot is not None else False
-    if snapshot is None or snapshot.last_seen_at is None:
+    last_seen_at = getattr(snapshot, "last_seen_at", None) if snapshot is not None else None
+    if last_seen_at is not None and last_seen_at.tzinfo is not None:
+        last_seen_at = last_seen_at.astimezone(timezone.utc).replace(tzinfo=None)
+    if client_last_seen_at is not None:
+        effective_client_seen = client_last_seen_at
+        if effective_client_seen.tzinfo is not None:
+            effective_client_seen = effective_client_seen.astimezone(timezone.utc).replace(tzinfo=None)
+        if last_seen_at is None or effective_client_seen > last_seen_at:
+            last_seen_at = effective_client_seen
+    if snapshot is None or last_seen_at is None:
         pending = revision > applied_revision
         if refresh_requested:
             # A refresh can be queued before the first Windows projection has
@@ -2396,9 +2477,6 @@ def sync_state(
             "saved_by": 0,
             "refresh_requested": refresh_requested,
         }
-    last_seen_at = snapshot.last_seen_at
-    if last_seen_at.tzinfo is not None:
-        last_seen_at = last_seen_at.astimezone(timezone.utc).replace(tzinfo=None)
     online = last_seen_at >= utcnow() - timedelta(seconds=offline_after_seconds)
     pending = revision > applied_revision
     refresh_requested = bool(snapshot.refresh_requested)
@@ -2795,6 +2873,29 @@ def touch_client_heartbeat(
     return count
 
 
+def touch_client_liveness(db: Session, client_id: object) -> int:
+    """Refresh only the Windows liveness timestamp.
+
+    The full exchange may be slow because it applies group revisions and
+    runtime data.  A separate lightweight heartbeat must not change sync
+    status, authorization, revisions, or pending refresh flags; it only keeps
+    the portal from showing a reachable but busy Windows client as offline.
+    """
+    normalized_client_id = str(client_id or "").strip()[:64]
+    if not normalized_client_id:
+        return 0
+    now = utcnow()
+    count = 0
+    snapshots = db.scalars(
+        select(GroupConfigSnapshot)
+        .where(GroupConfigSnapshot.client_id == normalized_client_id)
+    )
+    for snapshot in snapshots:
+        snapshot.last_seen_at = now
+        count += 1
+    return count
+
+
 def missing_bot_group_ids(db: Session, group_ids: list[object] | None) -> list[str]:
     """Return valid local group IDs that have no server snapshot yet.
 
@@ -3046,9 +3147,10 @@ def apply_bot_exchange(
     are stored in different Windows files.  A config-only projection is safe
     to ingest when auth.json is unavailable, but it must retain/temporarily
     invalidate the portal's card state rather than writing a fabricated empty
-    authorization. For groups bound to a portal account, the Linux web
-    projection is canonical and local Windows config uploads never replace it.
-    Only a complete pair of sources may reconcile deletion.
+    authorization. For groups bound to a portal account, the newest configuration
+    edit wins: a newer Windows command replaces an older pending web projection,
+    while an older local heartbeat never overwrites a newer web save. Only a
+    complete pair of sources may reconcile deletion.
     """
 
     def change_metadata(snapshot: GroupConfigSnapshot) -> dict[str, Any]:
@@ -3346,6 +3448,7 @@ def apply_bot_exchange(
         ):
             continue
         is_portal_group = group_id in portal_group_ids
+        state = None
         if is_portal_group:
             state = _group_client_sync(db, group_id, normalized_client_id)
             if state is None:
@@ -3371,6 +3474,10 @@ def apply_bot_exchange(
             if has_config
             else None
         )
+        try:
+            local_updated_at = max(0, int(item.get("local_updated_at", 0) or 0))
+        except (TypeError, ValueError, OverflowError):
+            local_updated_at = 0
         if isinstance(incoming, dict):
             incoming["group_id"] = group_id
         if snapshot is None:
@@ -3403,15 +3510,61 @@ def apply_bot_exchange(
             if is_portal_group and not snapshot.client_id:
                 snapshot.applied_revision = 0
                 snapshot.sync_status = "pending"
-        if (
-            has_config
-            and not is_portal_group
-            and snapshot.revision <= snapshot.applied_revision
-        ):
-            # No pending web edit: local remains canonical and refreshes MySQL.
-            snapshot.config_json = incoming
-            snapshot.sync_status = "synced"
-            snapshot.sync_error = ""
+        if has_config and isinstance(incoming, dict):
+            web_revision_pending = bool(
+                is_portal_group and snapshot.revision > snapshot.applied_revision
+            )
+            snapshot_updated_at = getattr(snapshot, "updated_at", None)
+            if isinstance(snapshot_updated_at, datetime):
+                if snapshot_updated_at.tzinfo is None:
+                    snapshot_updated_at = snapshot_updated_at.replace(tzinfo=timezone.utc)
+                snapshot_updated_seconds = int(snapshot_updated_at.timestamp())
+            else:
+                snapshot_updated_seconds = 0
+            current_config = (
+                snapshot.config_json if isinstance(snapshot.config_json, dict) else {}
+            )
+            empty_portal_snapshot = bool(
+                is_portal_group
+                and not current_config.get("features")
+                and set(current_config).issubset({"group_id", "features"})
+            )
+            local_is_newer = bool(
+                local_updated_at and local_updated_at > snapshot_updated_seconds
+            )
+            accept_local_config = bool(
+                not is_portal_group
+                or not web_revision_pending
+                or empty_portal_snapshot
+                or local_is_newer
+            )
+            if accept_local_config:
+                local_config_changed = incoming != current_config
+                snapshot.config_json = incoming
+                snapshot.sync_status = "synced"
+                snapshot.sync_error = ""
+                if is_portal_group and local_config_changed:
+                    snapshot.revision = max(
+                        _safe_bigint(snapshot.revision),
+                        _safe_bigint(snapshot.applied_revision),
+                    ) + 1
+                    snapshot.applied_revision = snapshot.revision
+                    snapshot.updated_by = None
+                    if state is not None:
+                        state.applied_revision = snapshot.revision
+                    logger.info(
+                        "接受 Windows 最新分群配置 group=%s client=%s revision=%s",
+                        group_id,
+                        normalized_client_id,
+                        snapshot.revision,
+                    )
+            elif is_portal_group:
+                logger.debug(
+                    "保留网页较新的分群配置 group=%s local_updated_at=%s web_updated_at=%s",
+                    group_id,
+                    local_updated_at,
+                    snapshot_updated_seconds,
+                )
 
         snapshot.client_id = client_id[:64]
         snapshot.last_seen_at = now

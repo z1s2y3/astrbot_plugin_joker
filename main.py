@@ -309,7 +309,7 @@ def _compact_reply_text(text: str) -> str:
     return compact
 
 
-@register("astrbot_plugin_joker", "Joker", "SCUM 查询与 QQ 群管插件", "1.11.424")
+@register("astrbot_plugin_joker", "Joker", "SCUM 查询与 QQ 群管插件", "1.11.446")
 class MyPlugin(Star):
     _MEMBER_REFRESH_WARNING_COOLDOWN_SECONDS = 300
     _GROUP_BOT_ACTIVITY_TTL_SECONDS = 120
@@ -3673,7 +3673,7 @@ class MyPlugin(Star):
         self._music_share_seen: dict[str, float] = {}
         self._music_share_seen_ttl = 30.0
         
-        logger.debug("Joker 插件初始化完成，版本 1.11.424")
+        logger.debug("Joker 插件初始化完成，版本 1.11.446")
 
     @staticmethod
     def _write_json_atomic(path: str, data: dict) -> None:
@@ -3746,7 +3746,6 @@ class MyPlugin(Star):
                 return True
             
             from .qqadmin.group_config import (
-                clone_global_config_to_group,
                 get_group_config,
                 load_group_config,
             )
@@ -3758,17 +3757,14 @@ class MyPlugin(Star):
             synced_count = 0
             for gid in authorized_groups:
                 if is_group_authorized(str(gid)):
-                    # A global plugin-settings reload must never reset an
-                    # existing group's choices.  In particular, a customer
-                    # who disabled recall or edited replies in this group
-                    # must keep those values after an unrelated update.  The
-                    # global configuration is only the *initial* template;
-                    # an existing JSON file remains the Windows authority.
+                    # 全局配置只属于全局。分群配置必须始终独立保存，
+                    # 全局文件变化不能自动覆盖或初始化分群设置。
                     if load_group_config(str(gid)):
-                        get_group_config(str(gid), self.config)
+                        get_group_config(str(gid))
                         logger.debug(f"保留群 {gid} 的现有分群配置")
                     else:
-                        clone_global_config_to_group(gid, self.config)
+                        get_group_config(str(gid))
+                        logger.debug(f"为群 {gid} 创建独立默认分群配置")
                     synced_count += 1
                     logger.debug(f"已检查全局配置同步群 {gid}")
             
@@ -4381,6 +4377,23 @@ class MyPlugin(Star):
         # Read the current persisted setting on every outbound path.  A stale
         # in-memory value must never allow a newly-enabled auth gate to be bypassed.
         return can_send_group_message(group_id)
+
+    def _group_runtime_gate_reason(self, group_id: str) -> str:
+        """Return why a group is not allowed to run group features."""
+        normalized_group_id = self._normalize_positive_id(group_id)
+        if not normalized_group_id:
+            return "invalid_group"
+        if self._is_in_whitelist(normalized_group_id):
+            return "ready"
+
+        from .qqadmin.group_config import get_group_data
+
+        features = get_group_data(normalized_group_id, "features", {})
+        if not isinstance(features, dict) or features.get("power_status") != "on":
+            return "power_off"
+        if self.enable_auth and not is_group_authorized(normalized_group_id):
+            return "unauthorized"
+        return "ready"
 
     # 未授权群只保留实际存在的卡密激活入口；成功激活后才允许回复。
     _auth_commands = {"激活卡密", "激活游戏卡密", "验证游戏卡密"}
@@ -5748,6 +5761,10 @@ class MyPlugin(Star):
             # A process may host several QQ accounts, and scheduled jobs must
             # use the account that belongs to the target group.
             self._group_platform_bots = {}
+        if not hasattr(self, "_group_platform_event_contexts"):
+            # Keep the latest group event so a pending request read from
+            # NapCat can reuse the normal verification/send flow.
+            self._group_platform_event_contexts = {}
         if not hasattr(self, "_group_platform_bot_candidates"):
             # Group events can arrive through more than one QQ account.  Keep
             # each concrete client so scheduled work can choose the account
@@ -5760,6 +5777,9 @@ class MyPlugin(Star):
         )
         self._verification_timeout_task = self._background_tasks.start(
             "verification_timeout", self._verification_timeout_loop
+        )
+        self._direct_group_request_poll_task = self._background_tasks.start(
+            "direct_group_request_poll", self._direct_group_request_poll_loop
         )
         self._refresh_portal_sync_task()
         self._member_directory_upload_task = self._background_tasks.start(
@@ -7108,6 +7128,9 @@ class MyPlugin(Star):
         normalized_group = str(group_id or "").strip()
         if not normalized_group:
             return
+        if not hasattr(self, "_group_platform_event_contexts"):
+            self._group_platform_event_contexts = {}
+        self._group_platform_event_contexts[normalized_group] = event
         platform_id = self._get_event_platform_id(event)
         if platform_id:
             self._group_platform_ids[normalized_group] = platform_id
@@ -10162,7 +10185,8 @@ class MyPlugin(Star):
             fields = (
                 "post_type", "request_type", "notice_type", "sub_type",
                 "group_id", "user_id", "flag", "comment", "nickname",
-                "inviter", "self_id",
+                "request_id", "requestId", "request_flag", "requestFlag",
+                "seq", "msg_seq", "inviter", "self_id",
             )
             mapped = {
                 key: getattr(value, key, None)
@@ -10186,6 +10210,341 @@ class MyPlugin(Star):
             if payload:
                 return payload
         return {}
+
+    @staticmethod
+    def _get_group_request_flag(event: AstrMessageEvent, raw_event: object) -> str:
+        """Extract a request token from OneBot/NapCat event aliases."""
+        aliases = (
+            "flag", "request_id", "requestId", "request_flag", "requestFlag",
+            "seq", "msg_seq",
+        )
+        wrappers = (
+            "request", "request_data", "requestData", "request_info", "requestInfo",
+            "event", "event_data", "eventData", "raw_event", "rawEvent",
+            "raw_message", "rawMessage", "message_obj", "messageObj", "message",
+            "data", "payload", "body", "detail", "context", "extra", "params",
+            "result",
+        )
+        visited: set[int] = set()
+
+        def scalar(value: object) -> str:
+            if value in (None, "", 0, "0") or isinstance(value, (dict, list, tuple, set)):
+                return ""
+            text = str(value).strip()
+            return text if text and text != "0" else ""
+
+        def find(value: object, depth: int = 0) -> str:
+            if value is None or depth > 7:
+                return ""
+            if isinstance(value, (str, int)) and not isinstance(value, bool):
+                return scalar(value)
+            marker = id(value)
+            if marker in visited:
+                return ""
+            visited.add(marker)
+            if isinstance(value, dict):
+                for key in aliases:
+                    if key in value:
+                        found = scalar(value.get(key))
+                        if found:
+                            return found
+                for key in wrappers:
+                    if key in value:
+                        found = find(value.get(key), depth + 1)
+                        if found:
+                            return found
+                return ""
+            if isinstance(value, (list, tuple, set)):
+                for item in value:
+                    found = find(item, depth + 1)
+                    if found:
+                        return found
+                return ""
+            for key in aliases:
+                try:
+                    found = scalar(getattr(value, key, None))
+                except Exception:
+                    found = ""
+                if found:
+                    return found
+            for key in wrappers:
+                try:
+                    nested = getattr(value, key, None)
+                except Exception:
+                    nested = None
+                found = find(nested, depth + 1)
+                if found:
+                    return found
+            return ""
+
+        message_obj = getattr(event, "message_obj", None)
+        for source in (
+            raw_event,
+            event,
+            message_obj,
+            getattr(message_obj, "raw_message", None),
+            getattr(message_obj, "raw_event", None),
+            getattr(message_obj, "data", None),
+            getattr(event, "raw_message", None),
+            getattr(event, "raw_event", None),
+            getattr(event, "data", None),
+        ):
+            found = find(source)
+            if found:
+                return found
+        return ""
+
+    @staticmethod
+    def _collect_group_request_records(value: object) -> list[dict]:
+        """Extract pending group applications from get_group_system_msg output."""
+        records: list[dict] = []
+        visited: set[int] = set()
+
+        def boolish(value: object) -> bool:
+            if isinstance(value, bool):
+                return value
+            if isinstance(value, (int, float)):
+                return bool(value)
+            return str(value or "").strip().lower() in {
+                "1", "true", "yes", "y", "on", "checked", "handled",
+                "done", "approved", "已处理", "已通过",
+            }
+
+        def direct_id(record: dict, names: tuple[str, ...]) -> str:
+            for name in names:
+                if name not in record:
+                    continue
+                normalized = MyPlugin._normalize_positive_id(record.get(name))
+                if normalized:
+                    return normalized
+            return ""
+
+        def collect(current: object, depth: int = 0) -> None:
+            if current is None or depth > 7:
+                return
+            if isinstance(current, str):
+                text = current.strip()
+                if text[:1] in {"[", "{"}:
+                    try:
+                        collect(json.loads(text), depth + 1)
+                    except (TypeError, ValueError, json.JSONDecodeError):
+                        pass
+                return
+            if isinstance(current, dict):
+                marker = id(current)
+                if marker in visited:
+                    return
+                visited.add(marker)
+                user_id = direct_id(
+                    current,
+                    (
+                        "requester_uin", "requesterUin",
+                        "applicant_uin", "applicantUin", "from_uin", "fromUin",
+                        "user_id", "userId",
+                        "qq", "uin", "uid",
+                    ),
+                )
+                group_id = direct_id(
+                    current,
+                    (
+                        "group_id", "groupId", "group_uin", "groupUin", "group_code",
+                        "groupCode", "group_number", "groupNumber", "gid",
+                    ),
+                )
+                if user_id and group_id:
+                    raw_time = (
+                        current.get("time")
+                        or current.get("request_time")
+                        or current.get("requestTime")
+                        or current.get("msg_time")
+                        or current.get("msgTime")
+                        or current.get("created_at")
+                        or current.get("createdAt")
+                        or 0
+                    )
+                    try:
+                        request_time = int(raw_time)
+                    except (TypeError, ValueError, OverflowError):
+                        request_time = 0
+                    while request_time > 100_000_000_000:
+                        request_time //= 1000
+                    raw_flag = str(
+                        current.get("flag")
+                        or current.get("request_id")
+                        or current.get("requestId")
+                        or current.get("request_flag")
+                        or current.get("requestFlag")
+                        or current.get("seq")
+                        or current.get("msg_seq")
+                        or ""
+                    ).strip()
+                    flag_event_type = ""
+                    if raw_flag.lower().startswith("slreq:"):
+                        flag_parts = raw_flag.split(":")
+                        if len(flag_parts) >= 5:
+                            flag_event_type = str(flag_parts[4]).strip()
+                    # NapCat's ``slreq`` records often omit every explicit
+                    # time field, while the request timestamp is embedded in
+                    # the flag as microseconds:
+                    # ``slreq:1:<timestamp>:<group>:...``.
+                    if not request_time and raw_flag.lower().startswith("slreq:"):
+                        flag_parts = raw_flag.split(":")
+                        if len(flag_parts) > 2:
+                            try:
+                                request_time = int(flag_parts[2])
+                            except (TypeError, ValueError, OverflowError):
+                                request_time = 0
+                            while request_time > 100_000_000_000:
+                                request_time //= 1000
+                    invitor_id = direct_id(
+                        current,
+                        (
+                            "invitor_uin", "invitorUin",
+                            "inviter_uin", "inviterUin",
+                            "inviter_id", "inviterId",
+                        ),
+                    )
+                    configured_sub_type = str(
+                        current.get("sub_type")
+                        or current.get("subType")
+                        or current.get("request_sub_type")
+                        or ""
+                    ).strip().lower()
+                    # SnowLuma encodes invite operations as flag event types
+                    # 2/22.  Those records may have no requester_uin and must
+                    # not be treated as a user's join application.
+                    sub_type = configured_sub_type or (
+                        "invite"
+                        if invitor_id or flag_event_type in {"2", "22"}
+                        else "add"
+                    )
+                    records.append(
+                        {
+                            "group_id": group_id,
+                            "user_id": user_id,
+                            "flag": raw_flag,
+                            "nickname": str(
+                                current.get("nickname")
+                                or current.get("requester_nick")
+                                or current.get("requesterNick")
+                                or ""
+                            ).strip(),
+                            "comment": str(
+                                current.get("comment") or current.get("message") or ""
+                            ).strip(),
+                            "sub_type": sub_type,
+                            "request_event_type": flag_event_type,
+                            "request_type": str(
+                                current.get("request_type")
+                                or current.get("requestType")
+                                or current.get("type")
+                                or "group"
+                            ).strip().lower(),
+                            "checked": boolish(
+                                current.get("checked")
+                                or current.get("is_checked")
+                                or current.get("isChecked")
+                                or current.get("handled")
+                                or current.get("is_handled")
+                                or current.get("isHandled")
+                            ),
+                            "status": str(
+                                current.get("status")
+                                or current.get("state")
+                                or current.get("approval_status")
+                                or ""
+                            ).strip().lower(),
+                            "time": request_time,
+                        }
+                    )
+                for nested in current.values():
+                    if isinstance(nested, (dict, list, tuple)):
+                        collect(nested, depth + 1)
+            elif isinstance(current, (list, tuple)):
+                for nested in current:
+                    collect(nested, depth + 1)
+
+        collect(value)
+        unique: dict[tuple[str, str, str], dict] = {}
+        for record in records:
+            key = (
+                str(record.get("group_id", "")),
+                str(record.get("user_id", "")),
+                str(record.get("flag", "")),
+            )
+            previous = unique.get(key)
+            if previous is None or int(record.get("time", 0) or 0) >= int(
+                previous.get("time", 0) or 0
+            ):
+                unique[key] = record
+        return list(unique.values())
+
+    def _filter_group_request_records(
+        self,
+        records: list[dict],
+        group_id: str = "",
+        now: float | None = None,
+    ) -> list[dict]:
+        """Keep only actionable, recent user join applications.
+
+        SnowLuma and NapCat expose the same queue through several code paths.
+        Centralize the shared validation so invite records, handled records,
+        stale records, and bot accounts are filtered consistently.
+        """
+        normalized_group = self._normalize_positive_id(group_id)
+        current_time = int(now if now is not None else time.time())
+        valid_statuses = {
+            "checked", "handled", "done", "approved", "rejected",
+            "processed", "expired", "已处理", "已通过", "已拒绝",
+        }
+        valid_request_types = {"group", "add", "join", "group_request", ""}
+        unique: dict[tuple[str, str, str], dict] = {}
+
+        for source in records:
+            if not isinstance(source, dict):
+                continue
+            record = dict(source)
+            record_group = self._normalize_positive_id(record.get("group_id"))
+            user_id = self._normalize_positive_id(record.get("user_id"))
+            if not record_group or not user_id:
+                continue
+            if normalized_group and record_group != normalized_group:
+                continue
+            if bool(record.get("checked")) or str(record.get("status", "")).lower() in valid_statuses:
+                continue
+            request_type = str(record.get("request_type", "group") or "group").lower()
+            if request_type not in valid_request_types:
+                continue
+            sub_type = str(record.get("sub_type", "add") or "add").lower()
+            if sub_type in {"invite", "invited"} or str(
+                record.get("request_event_type", "") or ""
+            ) in {"2", "22"}:
+                continue
+            request_time = int(record.get("time", 0) or 0)
+            if request_time and (
+                current_time - request_time > 7 * 24 * 60 * 60
+                or request_time > current_time + 5 * 60
+            ):
+                continue
+            if user_id in self._known_group_bot_account_ids(record_group):
+                logger.error(
+                    "QQ待审核记录申请人解析为机器人账号，已跳过 group=%s user=%s flag=%s；"
+                    "请检查 requester_uin 字段和 NapCat 返回数据",
+                    record_group,
+                    user_id,
+                    record.get("flag", ""),
+                )
+                continue
+            record["group_id"] = record_group
+            record["user_id"] = user_id
+            record["sub_type"] = sub_type
+            key = (record_group, user_id, str(record.get("flag", "") or ""))
+            previous = unique.get(key)
+            if previous is None or int(record.get("time", 0) or 0) >= int(
+                previous.get("time", 0) or 0
+            ):
+                unique[key] = record
+        return list(unique.values())
 
     def _get_group_request_event_id(
         self, event: AstrMessageEvent, raw_event: object, *, kind: str
@@ -10295,6 +10654,7 @@ class MyPlugin(Star):
         event: AstrMessageEvent,
         user_id: str,
         raw_event: dict,
+        expected_group_id: str = "",
     ) -> dict:
         """Resolve a missing request group via OneBot's pending-request list.
 
@@ -10307,95 +10667,435 @@ class MyPlugin(Star):
         normalized_user = self._normalize_positive_id(user_id)
         if not normalized_user:
             return {}
-        event_flag = str(raw_event.get("flag", "") or "").strip()
+        event_flag = str(
+            raw_event.get("flag")
+            or self._get_group_request_flag(event, raw_event)
+            or ""
+        ).strip()
+        normalized_expected_group = self._normalize_positive_id(expected_group_id)
+        # Never query the global pending-request queue without a known,
+        # authorized group.  Otherwise an ordinary message from an
+        # unauthorized group could accidentally trigger audit discovery.
+        if not normalized_expected_group:
+            return {}
+        if self._group_runtime_gate_reason(normalized_expected_group) != "ready":
+            return {}
         clients = []
-        event_bot = getattr(event, "bot", None)
-        if callable(getattr(event_bot, "call_action", None)):
-            clients.append(event_bot)
-        try:
-            platform = self.context.get_platform(filter.PlatformAdapterType.AIOCQHTTP)
-            client = platform.get_client() if platform else None
-            if callable(getattr(client, "call_action", None)) and client not in clients:
-                clients.append(client)
-        except Exception:
-            pass
+        seen_clients: set[int] = set()
 
-        def direct_id(record: dict, names: tuple[str, ...]) -> str:
-            for name in names:
-                if name not in record:
-                    continue
-                value = self._normalize_positive_id(record.get(name))
-                if value:
-                    return value
-            return ""
-
-        def collect_records(value: object, records: list[dict], depth: int = 0) -> None:
-            if value is None or depth > 6:
+        def add_client(client: object) -> None:
+            if not callable(getattr(client, "call_action", None)):
                 return
-            if isinstance(value, dict):
-                candidate_user = direct_id(
-                    value,
-                    (
-                        "user_id", "userId", "requester_uin", "requesterUin",
-                        "applicant_uin", "applicantUin", "from_uin", "fromUin",
-                        "qq", "uin", "uid",
-                    ),
-                )
-                candidate_group = direct_id(
-                    value,
-                    (
-                        "group_id", "groupId", "group_uin", "groupUin", "group_code",
-                        "groupCode", "group_number", "groupNumber", "gid",
-                    ),
-                )
-                if candidate_user == normalized_user and candidate_group:
-                    raw_time = value.get("time") or value.get("request_time") or 0
-                    try:
-                        record_time = int(raw_time)
-                    except (TypeError, ValueError, OverflowError):
-                        record_time = 0
-                    records.append({
-                        "group_id": candidate_group,
-                        "flag": str(
-                            value.get("flag") or value.get("request_id")
-                            or value.get("requestId") or value.get("seq")
-                            or value.get("msg_seq") or ""
-                        ).strip(),
-                        "nickname": str(
-                            value.get("nickname") or value.get("requester_nick")
-                            or value.get("requesterNick") or ""
-                        ).strip(),
-                        "comment": str(value.get("comment") or value.get("message") or "").strip(),
-                        "time": record_time,
-                    })
-                for nested in value.values():
-                    if isinstance(nested, (dict, list, tuple)):
-                        collect_records(nested, records, depth + 1)
-            elif isinstance(value, (list, tuple)):
-                for nested in value:
-                    collect_records(nested, records, depth + 1)
+            marker = id(client)
+            if marker not in seen_clients:
+                seen_clients.add(marker)
+                clients.append(client)
+
+        add_client(getattr(event, "bot", None))
+        for client in self._group_request_poll_clients():
+            add_client(client)
 
         for client in clients:
             try:
                 result = await asyncio.wait_for(
-                    client.call_action(action="get_group_system_msg"), timeout=3.0
+                    client.call_action(
+                        action="get_group_system_msg",
+                        **(
+                            {
+                                "group_id": int(normalized_expected_group),
+                                "only_pending": True,
+                                "count": 100,
+                            }
+                            if normalized_expected_group
+                            else {"only_pending": True, "count": 100}
+                        ),
+                    ),
+                    timeout=3.0,
                 )
             except asyncio.CancelledError:
                 raise
             except Exception:
                 continue
-            records: list[dict] = []
-            collect_records(result, records)
+            records = [
+                record
+                for record in self._filter_group_request_records(
+                    self._collect_group_request_records(result),
+                    normalized_expected_group,
+                )
+                if record.get("user_id") == normalized_user
+            ]
             if event_flag:
                 flagged = [record for record in records if record.get("flag") == event_flag]
                 if flagged:
                     records = flagged
+            if normalized_expected_group:
+                expected = [
+                    record
+                    for record in records
+                    if str(record.get("group_id", "")) == normalized_expected_group
+                ]
+                if expected:
+                    expected.sort(
+                        key=lambda record: int(record.get("time", 0) or 0),
+                        reverse=True,
+                    )
+                    resolved = dict(expected[0])
+                    resolved["_source_client"] = client
+                    return resolved
             group_ids = {str(record["group_id"]) for record in records if record.get("group_id")}
             if len(group_ids) != 1:
                 continue
             records.sort(key=lambda record: int(record.get("time", 0) or 0), reverse=True)
-            return records[0] if records else {}
+            if records:
+                resolved = dict(records[0])
+                resolved["_source_client"] = client
+                return resolved
+            return {}
         return {}
+
+    def _group_request_poll_clients(self, group_id: str = "") -> list[object]:
+        clients: list[object] = []
+        seen: set[int] = set()
+
+        def add(client: object) -> None:
+            if not callable(getattr(client, "call_action", None)):
+                return
+            marker = id(client)
+            if marker not in seen:
+                seen.add(marker)
+                clients.append(client)
+
+        normalized_group = self._normalize_positive_id(group_id)
+        if normalized_group:
+            add(getattr(self, "_group_platform_bots", {}).get(normalized_group))
+            candidates = getattr(self, "_group_platform_bot_candidates", {}).get(
+                normalized_group, {}
+            )
+            if isinstance(candidates, dict):
+                ordered_candidates = sorted(
+                    candidates.values(),
+                    key=lambda item: float(item.get("seen_at", 0) or 0)
+                    if isinstance(item, dict)
+                    else 0,
+                    reverse=True,
+                )
+                for candidate in ordered_candidates:
+                    if isinstance(candidate, dict):
+                        add(candidate.get("bot"))
+        for client in getattr(self, "_group_platform_bots", {}).values():
+            add(client)
+        for candidates in getattr(self, "_group_platform_bot_candidates", {}).values():
+            if not isinstance(candidates, dict):
+                continue
+            for candidate in candidates.values():
+                if isinstance(candidate, dict):
+                    add(candidate.get("bot"))
+        try:
+            platform = self.context.get_platform(filter.PlatformAdapterType.AIOCQHTTP)
+            add(platform.get_client() if platform else None)
+        except Exception:
+            pass
+        return clients
+
+    def _audit_poll_group_ids(self) -> list[str]:
+        """Return only powered-on, authorized groups with audit enabled."""
+        from .qqadmin.group_config import is_feature_enabled
+
+        group_ids: set[str] = set()
+        if self.enable_auth:
+            try:
+                group_ids.update(
+                    self._normalize_positive_id(group_id)
+                    for group_id in list_all_authorizations().keys()
+                )
+            except Exception:
+                return []
+            group_ids.update(
+                self._normalize_positive_id(group_id)
+                for group_id in self.whitelist_groups
+            )
+        else:
+            group_ids.update(
+                self._normalize_positive_id(group_id)
+                for group_id in getattr(self, "_group_platform_bots", {}).keys()
+            )
+            group_ids.update(
+                self._normalize_positive_id(group_id)
+                for group_id in getattr(self, "_group_platform_bot_candidates", {}).keys()
+            )
+
+        ready_groups = []
+        for group_id in sorted(group_ids):
+            if not group_id or self._group_runtime_gate_reason(group_id) != "ready":
+                continue
+            try:
+                if is_feature_enabled(group_id, "audit", self.config):
+                    ready_groups.append(group_id)
+            except Exception:
+                continue
+        return ready_groups
+
+    async def _fetch_pending_group_requests(
+        self, group_id: str = ""
+    ) -> tuple[list[dict], bool, str]:
+        """Read the platform's current join-request queue on demand.
+
+        Request events are not emitted consistently by every NapCat build.
+        Keep the command-side view independent from those events so an
+        administrator can still see the applications currently shown by QQ.
+        The boolean reports whether at least one client answered; the message
+        is only used for a concise diagnostic when every client failed.
+        """
+        normalized_group = self._normalize_positive_id(group_id)
+        records: list[dict] = []
+        answered = False
+        errors: list[str] = []
+        now = int(time.time())
+        for client in self._group_request_poll_clients():
+            try:
+                request_params = {"only_pending": True, "count": 100}
+                if normalized_group:
+                    request_params["group_id"] = int(normalized_group)
+                response = await asyncio.wait_for(
+                    client.call_action(
+                        action="get_group_system_msg", **request_params
+                    ),
+                    timeout=5.0,
+                )
+                answered = True
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                errors.append(self._onebot_failure_detail(exc) or type(exc).__name__)
+                continue
+            parsed_records = self._collect_group_request_records(response)
+            if parsed_records:
+                logger.info(
+                    "读取到 QQ 待处理入群申请 client=%s group=%s count=%s",
+                    getattr(client, "self_id", "") or getattr(client, "uin", "") or "unknown",
+                    normalized_group or "all",
+                    len(parsed_records),
+                )
+            for record in self._filter_group_request_records(
+                parsed_records,
+                normalized_group,
+                now,
+            ):
+                record["_source_client"] = client
+                records.append(record)
+
+        unique: dict[tuple[str, str, str], dict] = {}
+        for record in records:
+            key = (
+                str(record.get("group_id", "")),
+                str(record.get("user_id", "")),
+                str(record.get("flag", "")),
+            )
+            unique[key] = record
+        detail = errors[-1] if errors and not answered else ""
+        return list(unique.values()), answered, detail
+
+    async def _sync_platform_group_requests(
+        self, event: AstrMessageEvent, group_id: str
+    ) -> tuple[list[dict], bool, str]:
+        """Import currently pending QQ applications before displaying them."""
+        gate_reason = self._group_runtime_gate_reason(group_id)
+        if gate_reason != "ready":
+            return [], False, f"group_not_ready:{gate_reason}"
+
+        records, answered, detail = await self._fetch_pending_group_requests(group_id)
+        if not records:
+            return records, answered, detail
+
+        from .qqadmin.group_config import is_feature_enabled
+
+        if not is_feature_enabled(group_id, "audit", self.config):
+            logger.warning(
+                "读取到 QQ 待处理入群申请，但分群审核已关闭 group=%s count=%s",
+                group_id,
+                len(records),
+            )
+            return records, answered, detail
+
+        # NapCat may expose the request through get_group_system_msg without
+        # emitting GROUP_REQUEST. Reuse the normal admission flow so direct,
+        # code, math, id and steamid modes keep one implementation.
+        for record in records:
+            user_id = str(record.get("user_id", "") or "").strip()
+            flag = str(record.get("flag", "") or "").strip()
+            if not user_id or not flag:
+                continue
+            if not self._claim_group_admission_event(
+                "request", group_id, user_id, flag
+            ):
+                continue
+            raw_event = dict(record)
+            raw_event.update(
+                {
+                    "post_type": "request",
+                    "request_type": "group",
+                    "sub_type": "add",
+                    "group_id": group_id,
+                    "user_id": user_id,
+                    "flag": flag,
+                }
+            )
+            await self._process_group_request(event, raw_event)
+        return records, answered, detail
+
+    async def _poll_direct_group_requests(self) -> None:
+        failed_until = getattr(self, "_direct_request_failed_until", None)
+        if not isinstance(failed_until, dict):
+            failed_until = {}
+            self._direct_request_failed_until = failed_until
+        now = time.time()
+        for key, expiry in list(failed_until.items()):
+            if float(expiry or 0) <= now:
+                failed_until.pop(key, None)
+
+        poll_groups = self._audit_poll_group_ids()
+        if not poll_groups:
+            return
+        for group_id in poll_groups:
+            for client in self._group_request_poll_clients(group_id):
+                await self._poll_group_request_records(
+                    client, group_id, now, failed_until
+                )
+
+    async def _poll_group_request_records(
+        self, client: object, group_id: str, now: float, failed_until: dict
+    ) -> None:
+        from .qqadmin.audit import add_audit_history, get_audit_approval_mode
+        from .qqadmin.blacklist import (
+            get_blacklist_info,
+            get_global_blacklist_info,
+            is_in_blacklist,
+            is_in_global_blacklist,
+        )
+        from .qqadmin.group_config import is_feature_enabled
+
+        try:
+            result = await asyncio.wait_for(
+                client.call_action(
+                    action="get_group_system_msg",
+                    group_id=int(group_id),
+                    only_pending=True,
+                    count=100,
+                ),
+                timeout=5.0,
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            return
+        records = self._filter_group_request_records(
+            self._collect_group_request_records(result),
+            group_id,
+            now,
+        )
+        if records:
+            logger.debug(
+                "授权群入群审核读取到 %s 条申请 group=%s",
+                len(records),
+                group_id,
+            )
+        for record in records:
+            record["_source_client"] = client
+            user_id = str(record.get("user_id", "") or "").strip()
+            flag = str(record.get("flag", "") or "").strip()
+            if not flag:
+                continue
+            if not self._claim_group_admission_event(
+                "request", group_id, user_id, flag
+            ):
+                continue
+
+            mode = get_audit_approval_mode(group_id)
+            if mode != "direct":
+                event = getattr(self, "_group_platform_event_contexts", {}).get(group_id)
+                if event is None:
+                    continue
+                raw_event = dict(record)
+                raw_event.update(
+                    {
+                        "post_type": "request",
+                        "request_type": "group",
+                        "sub_type": "add",
+                        "group_id": group_id,
+                        "user_id": user_id,
+                        "flag": flag,
+                    }
+                )
+                await self._process_group_request(event, raw_event)
+                continue
+
+            failure_key = f"{group_id}:{user_id}:{flag}"
+            if float(failed_until.get(failure_key, 0) or 0) > now:
+                continue
+            approve = True
+            reason = ""
+            if is_in_global_blacklist(user_id, group_id=group_id):
+                approve = False
+                info = get_global_blacklist_info(user_id, group_id=group_id)
+                reason = str(info.get("reason", "全局黑名单用户") or "全局黑名单用户")
+            elif is_feature_enabled(group_id, "blacklist", self.config) and is_in_blacklist(
+                group_id, user_id
+            ):
+                approve = False
+                info = get_blacklist_info(group_id, user_id)
+                reason = str(info.get("reason", "黑名单用户") or "黑名单用户")
+            try:
+                await self._call_group_request_action(
+                    None,
+                    action="set_group_add_request",
+                    _request_client=client,
+                    flag=flag,
+                    sub_type="add",
+                    approve=approve,
+                    **({"reason": reason} if reason else {}),
+                )
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                detail = self._onebot_failure_detail(exc) or type(exc).__name__
+                if any(
+                    marker in detail.casefold()
+                    for marker in (
+                        "120161001", "handle async message fail", "not found",
+                        "expired", "不存在", "已处理",
+                    )
+                ):
+                    failed_until[failure_key] = now + 10 * 60
+                continue
+            action = "approved" if approve else "rejected"
+            add_audit_history(
+                group_id,
+                user_id,
+                str(record.get("nickname", "") or user_id),
+                action,
+                "",
+                "直接审批轮询" if approve else reason,
+            )
+            add_operation_log(
+                group_id,
+                "",
+                "",
+                "审核通过" if approve else "审核拒绝",
+                user_id,
+                "",
+                "直接审批轮询" if approve else reason,
+            )
+
+    async def _direct_group_request_poll_loop(self) -> None:
+        await asyncio.sleep(5)
+        while True:
+            try:
+                await self._poll_direct_group_requests()
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception("直接审批轮询异常")
+            await asyncio.sleep(8)
 
     async def _check_admin_group(
         self,
@@ -12488,7 +13188,7 @@ class MyPlugin(Star):
             or not self._can_send_group_message(group_id)
         ):
             return
-        from .qqadmin.group_config import get_group_feature_detail
+        from .qqadmin.group_config import get_group_feature_detail, is_feature_enabled
 
         detail = get_group_feature_detail(group_id, "keyword_filter", self.config)
         if not isinstance(detail, dict):
@@ -14290,8 +14990,46 @@ class MyPlugin(Star):
         )
         if str(raw_event.get("request_type", "") or "").strip().casefold() == "friend":
             return
-        if not is_group_request:
+        # Audit discovery is restricted to an already authorized and powered
+        # on group.  Do this before any pending-request lookup so an ordinary
+        # message from another group cannot trigger audit detection or logs.
+        candidate_group_id = self._normalize_positive_id(
+            raw_event.get("group_id") or self._get_group_id_from_event(event)
+        )
+        if not candidate_group_id:
             return
+        if self._group_runtime_gate_reason(candidate_group_id) != "ready":
+            return
+        if not is_group_request:
+            # Some NapCat builds forward a group application as an empty
+            # GROUP_MESSAGE. Confirm it through the pending-request list
+            # before treating the event as an ordinary empty message.
+            message_text = str(
+                getattr(event, "message_str", "")
+                or getattr(getattr(event, "message_obj", None), "message_str", "")
+                or ""
+            ).strip()
+            candidate_group_id = self._get_group_id_from_event(event)
+            candidate_user_id = self._get_sender_id_from_event(event)
+            if (
+                message_type_name == "groupmessage"
+                and not message_text
+                and candidate_user_id
+            ):
+                resolved = await self._resolve_missing_group_request_scope(
+                    event,
+                    candidate_user_id,
+                    {},
+                    expected_group_id=candidate_group_id,
+                )
+                if resolved:
+                    raw_event = dict(resolved)
+                    raw_event["post_type"] = "request"
+                    raw_event["request_type"] = "group"
+                    raw_event.setdefault("sub_type", "add")
+                    is_group_request = True
+            if not is_group_request:
+                return
         raw_event = dict(raw_event)
         if not raw_event.get("post_type"):
             raw_event["post_type"] = "request"
@@ -14299,18 +15037,26 @@ class MyPlugin(Star):
             raw_event["request_type"] = "group"
         if not raw_event.get("sub_type"):
             raw_event["sub_type"] = "add"
+        request_flag = self._get_group_request_flag(event, raw_event)
+        if request_flag:
+            raw_event["flag"] = request_flag
         group_id = self._get_group_request_event_id(
             event, raw_event, kind="group"
         ) or self._get_group_id_from_event(event)
         user_id = self._get_group_request_event_id(
             event, raw_event, kind="user"
         ) or self._get_sender_id_from_event(event)
-        if not group_id and user_id:
+        if user_id and (not group_id or not raw_event.get("flag")):
             resolved = await self._resolve_missing_group_request_scope(
-                event, user_id, raw_event
+                event,
+                user_id,
+                raw_event,
+                expected_group_id=group_id,
             )
-            group_id = self._normalize_positive_id(resolved.get("group_id"))
-            if group_id:
+            resolved_group_id = self._normalize_positive_id(resolved.get("group_id"))
+            if not group_id and resolved_group_id:
+                group_id = resolved_group_id
+            if resolved:
                 # Keep the original OneBot request flag whenever it exists.
                 # ``get_group_system_msg`` only fills optional display data or
                 # a missing flag for adapters that omit it in the event.
@@ -14318,9 +15064,10 @@ class MyPlugin(Star):
                     if not raw_event.get(key) and resolved.get(key):
                         raw_event[key] = resolved[key]
                 logger.info(
-                    "群申请事件已从待处理申请补全群号 group=%s user=%s",
+                    "群申请事件已从待处理申请补全申请信息 group=%s user=%s flag=%s",
                     group_id,
                     user_id,
+                    "yes" if raw_event.get("flag") else "missing",
                 )
         raw_event["group_id"] = group_id
         raw_event["user_id"] = user_id
@@ -14331,21 +15078,11 @@ class MyPlugin(Star):
                 user_id or "<empty>",
             )
             return
-        if not self._can_send_group_message(group_id):
-            logger.warning(
-                "群申请已识别但审核未执行：群 %s 当前未通过授权或开机检查",
-                group_id,
-            )
+        if self._group_runtime_gate_reason(group_id) != "ready":
             return
-        event_account = self._get_event_self_id(event)
-        if event_account and not self._is_primary_group_bot(event, group_id):
-            logger.info(
-                "跳过非优先机器人入群申请 group=%s user=%s account=%s",
-                group_id,
-                user_id,
-                event_account,
-            )
-            return
+        # 入群申请必须由所有收到事件的 QQ 连接尝试处理。多个账号同时
+        # 在线时，下面的 claim 会去重；如果只允许“优先机器人”，申请
+        # 可能刚好被另一台 NapCat 收到后直接丢弃。
         if not self._claim_group_admission_event(
             "request", group_id, user_id, str(raw_event.get("flag", "") or "")
         ):
@@ -14359,7 +15096,7 @@ class MyPlugin(Star):
         )
         await self._process_group_request(event, raw_event)
     
-    @filter.event_message_type(filter.EventMessageType.OTHER_MESSAGE, priority=12000)
+    @filter.event_message_type(filter.EventMessageType.ALL, priority=12000)
     async def handle_group_notice_events(self, event: AstrMessageEvent) -> None:
         raw_event = self._get_event_raw_payload(event)
         if str(raw_event.get("post_type", "")).lower() != "notice":
@@ -14371,7 +15108,11 @@ class MyPlugin(Star):
             or self._get_group_id_from_event(event)
             or ""
         )
-        if group_id and not self._event_allows_primary_group_bot(event, group_id):
+        if (
+            notice_type != "group_increase"
+            and group_id
+            and not self._event_allows_primary_group_bot(event, group_id)
+        ):
             logger.debug(
                 "跳过非优先机器人群通知 group=%s account=%s",
                 group_id,
@@ -14388,18 +15129,19 @@ class MyPlugin(Star):
                 sub_type or "<empty>",
             )
             if sub_type == "invite":
-                async for result in self._process_group_invite_notice(event, raw_event):
-                    yield result
-            elif sub_type in {"approve", "add"}:
-                event_account = self._get_event_self_id(event)
-                if event_account and not self._is_primary_group_bot(event, group_id):
-                    logger.info(
-                        "跳过非优先机器人的入群通知 group=%s user=%s account=%s",
+                if self._get_event_self_id(event) and not self._is_primary_group_bot(event, group_id):
+                    logger.debug(
+                        "跳过非优先机器人邀请入群通知 group=%s user=%s account=%s",
                         group_id,
                         user_id,
-                        event_account,
+                        self._get_event_self_id(event),
                     )
                     return
+                async for result in self._process_group_invite_notice(event, raw_event):
+                    yield result
+            elif sub_type in {"approve", "add", ""}:
+                # 某些 NapCat/OneBot 版本会省略 group_increase.sub_type。
+                # group_increase 本身已经表示成员入群，空值按 approve 处理。
                 notice_token = str(raw_event.get("time", "") or raw_event.get("flag", "") or "")
                 if not self._claim_group_admission_event(
                     "join", group_id, user_id, notice_token
@@ -14419,7 +15161,6 @@ class MyPlugin(Star):
         if notice_type == "group_decrease":
             await self.handle_group_member_decrease(event)
 
-    @filter.event_message_type(filter.EventMessageType.GROUP_MESSAGE)
     async def handle_group_member_decrease(self, event: AstrMessageEvent) -> None:
         """处理群成员退出事件，自动将退群用户加入黑名单"""
         raw_event = getattr(event.message_obj, "raw_message", None)
@@ -15028,12 +15769,12 @@ class MyPlugin(Star):
                                 f"直接输入验证码即可"
                             )
                         else:
-                            # 审批码验证：显示审批码
+                            # 群内验证码：显示验证码
                             await self._send_plain(event, 
                                 f"用户 {invitee_id} 被 {inviter_id} 邀请入群\n"
-                                f"审批码: {approval_code}\n"
+                                f"验证码: {approval_code}\n"
                                 f"请在 {timeout // 60} 分钟内完成验证\n"
-                                f"回答格式: 审批{approval_code}"
+                                f"请直接发送验证码"
                             )
                         logger.debug(f"邀请审核消息发送成功: user_id={invitee_id}, mode={returned_mode}")
                     except Exception as e:
@@ -15318,6 +16059,26 @@ class MyPlugin(Star):
         from astrbot.core.message.components import At, Plain
 
         approval_mode = get_audit_approval_mode(group_id) if audit_enabled else ""
+        logger.info(
+            "入群通知审核状态 group=%s user=%s subtype=%s audit_enabled=%s mode=%s",
+            group_id,
+            user_id,
+            str(sub_type or "<empty>"),
+            audit_enabled,
+            approval_mode or "<none>",
+        )
+        if not audit_enabled:
+            logger.warning(
+                "入群通知未创建验证挑战：群审核开关未开启 group=%s user=%s",
+                group_id,
+                user_id,
+            )
+        elif sub_type == "invite":
+            logger.info(
+                "入群通知跳过 ID/算数验证：该成员是邀请入群 group=%s user=%s",
+                group_id,
+                user_id,
+            )
         # Join notices do not always include a member profile. Resolve the
         # display name once before building the math/ID prompt so a missing
         # nickname can never abort verification with an UnboundLocalError.
@@ -15506,6 +16267,78 @@ class MyPlugin(Star):
                             self._cancel_undelivered_verification(
                                 group_id, user_id, pending_mode, "group_prompt_not_delivered"
                             )
+                    elif pending_mode == "code" and not bool(
+                        pending.get("verification_prompt_sent", False)
+                    ):
+                        from .qqadmin.audit import (
+                            get_max_verify_attempts,
+                            get_verification_timeout,
+                        )
+
+                        approval_code = str(
+                            pending.get("approval_code", "") or ""
+                        ).strip()
+                        if not approval_code:
+                            logger.error(
+                                "入群验证码缺失，无法发送群内验证提示 group=%s user=%s",
+                                group_id,
+                                user_id,
+                            )
+                            self._cancel_undelivered_verification(
+                                group_id, user_id, pending_mode, "missing_approval_code"
+                            )
+                        else:
+                            timeout = get_verification_timeout(group_id)
+                            max_attempts = get_max_verify_attempts(group_id)
+                            prompt_body = (
+                                f"入群验证码：{approval_code}\n"
+                                "请直接在本群发送验证码。\n"
+                                f"请在 {max(1, timeout // 60)} 分钟内完成；"
+                                f"最多尝试 {max_attempts} 次。"
+                            )
+                            prompt_chain, prompt_name = await self._build_verification_prompt_chain(
+                                event,
+                                group_id,
+                                user_id,
+                                prompt_body,
+                                fallback_name=str(pending.get("user_name", "") or ""),
+                            )
+                            msg_id = await self._send_group_msg_with_id(
+                                group_id,
+                                prompt_chain,
+                                context=self.context,
+                                auto_recall=False,
+                                bot=getattr(event, "bot", None),
+                                console_force_output=True,
+                                return_success_without_message_id=True,
+                            )
+                            if msg_id:
+                                sent_at = int(time.time())
+                                update_group_data(
+                                    group_id,
+                                    "audit_pending",
+                                    lambda records: [
+                                        dict(
+                                            record,
+                                            verification_prompt_sent=True,
+                                            verification_prompt_sent_at=sent_at,
+                                            prompt_sent_at=sent_at,
+                                        )
+                                        if str(record.get("user_id", "")) == str(user_id)
+                                        else record
+                                        for record in (records or [])
+                                    ],
+                                )
+                                logger.info(
+                                    "入群验证码已发送到群内 group=%s user=%s content=%s",
+                                    group_id,
+                                    user_id,
+                                    f"@{prompt_name} {prompt_body}".replace("\n", " | ")[:240],
+                                )
+                            else:
+                                self._cancel_undelivered_verification(
+                                    group_id, user_id, pending_mode, "group_prompt_not_delivered"
+                                )
                     else:
                         logger.debug(f"用户 {user_id} 入群但有待验证审核，暂不发送欢迎消息")
                     return
@@ -15513,7 +16346,8 @@ class MyPlugin(Star):
                 logger.debug(f"用户 {user_id} 入群，需要验证（模式: {approval_mode}，入群方式: {sub_type}），暂不发送欢迎消息")
 
                 if approval_mode == "code":
-                    # 审批码模式：添加审核请求，等待管理员审批
+                    # 兼容只收到 group_increase、没有收到 request 的适配器：
+                    # 直接建立群内验证码，不再提示管理员审批。
                     result = add_audit_request(group_id, user_id, user_id, "", "normal", approval_mode="code")
                     self._bind_verification_transport(group_id, user_id, event)
                     if result.get("success"):
@@ -15523,9 +16357,8 @@ class MyPlugin(Star):
 
                         try:
                             chain = [At(qq=int(user_id)), Plain(
-                                f" 欢迎加入群聊！\n"
-                                f"请等待管理员审批入群\n"
-                                f"审批码: {approval_code}\n"
+                                f" 入群验证码：{approval_code}\n"
+                                f"请直接在本群发送验证码\n"
                                 f"请在 {timeout // 60} 分钟内完成验证"
                             )]
                             msg_id = await self._send_group_msg_with_id(
@@ -15563,7 +16396,7 @@ class MyPlugin(Star):
                                 self._cancel_undelivered_verification(
                                     group_id, user_id, "code", "group_prompt_not_delivered"
                                 )
-                            logger.debug(f"已向用户 {user_id} 发送审批码验证消息 (msg_id={msg_id})")
+                            logger.debug(f"已向用户 {user_id} 发送群内验证码 (msg_id={msg_id})")
                         except Exception as e:
                             logger.error(f"发送审批码验证消息失败: {e}")
                     return
@@ -15755,18 +16588,28 @@ class MyPlugin(Star):
         group messages.  Prefer that event's bound bot client and only fall
         back to the global AIOCQHTTP platform when the wrapper has no client.
         """
+        request_client = kwargs.pop("_request_client", None)
+        try:
+            request_client = request_client or event.get_extra(
+                "_joker_group_request_client", None
+            )
+        except Exception:
+            pass
         clients = []
-        event_bot = getattr(event, "bot", None)
-        if callable(getattr(event_bot, "call_action", None)):
-            clients.append(event_bot)
-        if not clients:
-            try:
-                platform = self.context.get_platform(filter.PlatformAdapterType.AIOCQHTTP)
-                client = platform.get_client() if platform else None
-                if callable(getattr(client, "call_action", None)):
-                    clients.append(client)
-            except Exception:
-                pass
+        seen_clients: set[int] = set()
+
+        def add_client(client: object) -> None:
+            if not callable(getattr(client, "call_action", None)):
+                return
+            marker = id(client)
+            if marker not in seen_clients:
+                seen_clients.add(marker)
+                clients.append(client)
+
+        add_client(request_client)
+        add_client(getattr(event, "bot", None))
+        for client in self._group_request_poll_clients():
+            add_client(client)
         if not clients:
             raise RuntimeError("platform_unavailable")
 
@@ -15789,22 +16632,19 @@ class MyPlugin(Star):
         raise RuntimeError(detail or "QQ平台未接受入群审核操作")
 
     async def _process_group_request(self, event: AstrMessageEvent, raw_event: dict) -> None:
-        logger.debug(f"_process_group_request 被调用")
-        
         group_id = str(raw_event.get("group_id", ""))
-        logger.debug(f"group_id: {group_id}")
-        
         if not group_id or group_id == "None":
-            logger.debug("group_id为空或None，返回")
             return
+        if self._group_runtime_gate_reason(group_id) != "ready":
+            return
+        logger.debug("_process_group_request 被调用 group=%s", group_id)
         self._remember_group_bot(str(group_id), event)
-        if not self._can_send_group_message(group_id):
-            logger.warning(
-                "入群审核未处理：群 %s 当前未通过群消息授权/开机检查，请先确认网页授权和 Windows 连接",
-                group_id,
-            )
-            return
-        
+        source_client = raw_event.get("_source_client")
+        if callable(getattr(source_client, "call_action", None)):
+            try:
+                event.set_extra("_joker_group_request_client", source_client)
+            except Exception:
+                pass
         request_type = raw_event.get("request_type", "")
         logger.debug(f"request_type: {request_type}")
         
@@ -15815,7 +16655,12 @@ class MyPlugin(Star):
         sub_type = raw_event.get("sub_type", "")
         user_id = str(raw_event.get("user_id", ""))
         self._bind_verification_transport(group_id, user_id, event)
-        flag = raw_event.get("flag", "")
+        flag = str(
+            raw_event.get("flag")
+            or self._get_group_request_flag(event, raw_event)
+            or ""
+        ).strip()
+        raw_event["flag"] = flag
         logger.info(
             "入群审核请求已接收 group=%s user=%s sub_type=%s flag=%s",
             group_id,
@@ -15873,7 +16718,20 @@ class MyPlugin(Star):
         for cache_key in list(getattr(self, "_feature_cache", {})):
             if str(cache_key).startswith(f"{group_id}_"):
                 self._feature_cache.pop(cache_key, None)
-        if not self._check_feature_cached(event, self.qqadmin_enable_audit, "audit_enabled"):
+        # 入群审核是分群配置，不能再使用全局开关判断。否则全局关闭时，
+        # 即使当前群已显示“开｜direct”，入群申请仍会被错误地忽略。
+        from .qqadmin.audit import get_audit_approval_mode
+        from .qqadmin.group_config import is_feature_enabled
+        audit_enabled = is_feature_enabled(group_id, "audit", self.config)
+        logger.info(
+            "入群审核状态 group=%s user=%s enabled=%s mode=%s flag=%s",
+            group_id,
+            user_id,
+            audit_enabled,
+            get_audit_approval_mode(group_id),
+            "yes" if flag else "missing",
+        )
+        if not audit_enabled:
             logger.info("入群审核已关闭，忽略申请 group=%s user=%s", group_id, user_id)
             return
         
@@ -15894,13 +16752,38 @@ class MyPlugin(Star):
                 logger.debug(f"检查用户是否在群中失败（正常情况）: {e}")
             
             # 检查用户是否已经在待验证队列中，如果是则跳过
-            from .qqadmin.audit import get_pending_verification, rearm_pending_request
+            from .qqadmin.audit import (
+                get_audit_approval_mode,
+                get_pending_verification,
+                rearm_pending_request,
+                remove_challenge,
+                remove_pending_request,
+            )
             existing_pending = get_pending_verification(group_id, user_id)
             if existing_pending:
-                rearm_pending_request(group_id, user_id)
-                self._steamid_prompt_claims.pop(f"{group_id}:{user_id}", None)
                 pending_mode = str(existing_pending.get("approval_mode", "") or "")
-                if flag and pending_mode in {"math", "id", "steamid"}:
+                effective_mode = get_audit_approval_mode(group_id)
+                # Older builds created a pending SteamID row even when the
+                # group was configured as direct.  That row must not block a
+                # later direct request, and it must not be allowed to reach
+                # the timeout worker and kick the member.
+                if effective_mode == "direct" or pending_mode == "direct":
+                    remove_pending_request(group_id, user_id)
+                    challenge_id = existing_pending.get("challenge_id")
+                    if challenge_id:
+                        remove_challenge(group_id, str(challenge_id))
+                    self._steamid_prompt_claims.pop(f"{group_id}:{user_id}", None)
+                    logger.info(
+                        "直接审批清理旧验证状态 group=%s user=%s old_mode=%s",
+                        group_id,
+                        user_id,
+                        pending_mode or "unknown",
+                    )
+                    existing_pending = None
+                else:
+                    rearm_pending_request(group_id, user_id)
+                    self._steamid_prompt_claims.pop(f"{group_id}:{user_id}", None)
+                if existing_pending is not None and flag and pending_mode in {"math", "id", "steamid"}:
                     try:
                         await self._call_group_request_action(
                             event,
@@ -15918,14 +16801,15 @@ class MyPlugin(Star):
                             self._onebot_failure_detail(exc) or type(exc).__name__,
                         )
                         return
-                logger.info(
-                    "重复入群申请已处理 group=%s user=%s mode=%s auto_approved=%s",
-                    group_id,
-                    user_id,
-                    pending_mode,
-                    bool(flag and pending_mode in {"math", "id", "steamid"}),
-                )
-                return
+                if existing_pending is not None:
+                    logger.info(
+                        "重复入群申请已处理 group=%s user=%s mode=%s auto_approved=%s",
+                        group_id,
+                        user_id,
+                        pending_mode,
+                        bool(flag and pending_mode in {"math", "id", "steamid"}),
+                    )
+                    return
             
             # 重新加载配置
             self._reload_plugin_config()
@@ -16031,6 +16915,13 @@ class MyPlugin(Star):
             
             from .qqadmin.audit import get_audit_approval_mode, add_audit_request
             approval_mode = get_audit_approval_mode(group_id)
+            logger.info(
+                "入群审核配置 group=%s enabled=%s mode=%s flag=%s",
+                group_id,
+                "on" if self.qqadmin_enable_audit else "off",
+                approval_mode,
+                "yes" if flag else "missing",
+            )
             
             # 检查申请者是否是管理员或群主（虽然管理员/群主一般不会自己申请进群，但为了完整性进行检查）
             is_admin_or_owner = False
@@ -16096,7 +16987,7 @@ class MyPlugin(Star):
                 # 给用户发送数学题。
                 if not flag:
                     logger.warning(
-                        "直接审批缺少 QQ request flag: group_id=%s user_id=%s",
+                        "直接审批未执行：申请事件没有可用 request flag，group_id=%s user_id=%s；已回查待处理申请但仍未找到申请编号",
                         group_id,
                         user_id,
                     )
@@ -16135,51 +17026,11 @@ class MyPlugin(Star):
                     "",
                     "直接审批",
                 )
-                if self._steam_binding_requires_database(group_id):
-                    from .qqadmin.audit import (
-                        add_audit_request,
-                        mark_pending_steamid_stage,
-                        get_verification_timeout,
-                    )
-                    from .qqadmin.group_config import update_group_data
-
-                    staged = add_audit_request(
-                        group_id,
-                        user_id,
-                        user_name,
-                        "",
-                        "normal",
-                        flag=flag,
-                        approval_mode="direct",
-                    )
-                    if staged.get("success") and mark_pending_steamid_stage(group_id, user_id):
-                        prompted = await self._prompt_steamid_submission(
-                            event,
-                            group_id,
-                            user_id,
-                            timeout=get_verification_timeout(group_id),
-                        )
-                        if prompted:
-                            sent_at = int(time.time())
-                            update_group_data(
-                                group_id,
-                                "audit_pending",
-                                lambda records: [
-                                    dict(
-                                        record,
-                                        steamid_prompt_sent=True,
-                                        steamid_prompt_sent_at=sent_at,
-                                        prompt_sent_at=sent_at,
-                                    )
-                                    if str(record.get("user_id", "")) == str(user_id)
-                                    else record
-                                    for record in (records or [])
-                                ],
-                            )
-                        else:
-                            self._cancel_undelivered_verification(
-                                group_id, user_id, "steamid", "steamid_prompt_not_delivered"
-                            )
+                # ``direct`` is intentionally a complete bypass: approve the
+                # QQ request and do not create a pending verification row.
+                # SteamID validation belongs to the explicit ``steamid`` mode;
+                # otherwise a direct approval could later be kicked by the
+                # verification-timeout worker.
                 logger.debug(
                     "直接批准入群申请: group_id=%s user_id=%s user_name=%s",
                     group_id,
@@ -16188,31 +17039,56 @@ class MyPlugin(Star):
                 )
                 return
             elif approval_mode == "code":
-                # 管理员审批模式：不批准入群请求，等待管理员审批后才入群
-                result = add_audit_request(group_id, user_id, user_name, "", "normal", flag=flag)
-                if not result.get("success"):
-                    logger.error(f"添加审核请求失败: {result.get('message', '未知错误')}")
-                    return
-                
-                approval_code = result.get("approval_code", "")
-                
-                from .qqadmin.audit import get_verification_timeout
-                timeout = get_verification_timeout(group_id)
-                
-                # request 事件的 event.send() 在部分 QQ 适配器中不会投递；
-                # 审批码通知也统一走直接群消息接口。
-                await self._send_group_msg(
+                # code 与 math/id 一样：先批准 QQ 入群申请，成员进群后
+                # 在群内看到验证码并直接回复。旧版这里发送管理员审批码，
+                # 会导致用户永远收不到群内验证。
+                from .qqadmin.audit import add_audit_request, remove_pending_request
+
+                result = add_audit_request(
                     group_id,
-                    f"新的入群申请！\n"
-                    f"用户: {user_name}({user_id})\n"
-                    f"审批码: {approval_code}\n"
-                    f"请在 {timeout // 60} 分钟内处理\n"
-                    f"/同意 {approval_code} - 同意入群\n"
-                    f"/拒绝 {approval_code} - 拒绝入群",
-                    context=self.context,
-                    bot=getattr(event, "bot", None),
+                    user_id,
+                    user_name,
+                    "",
+                    "normal",
+                    flag=flag,
+                    challenge_info={},
+                    approval_mode="code",
                 )
-                logger.debug(f"用户 {user_name}({user_id}) 申请入群，等待管理员审批")
+                if not result.get("success"):
+                    logger.error(
+                        "添加入群验证码记录失败: %s",
+                        result.get("message", "未知错误"),
+                    )
+                    return
+                if not flag:
+                    remove_pending_request(group_id, user_id)
+                    logger.error(
+                        "入群验证码申请缺少 QQ flag，无法批准 group=%s user=%s",
+                        group_id,
+                        user_id,
+                    )
+                    return
+                try:
+                    await self._call_group_request_action(
+                        event,
+                        action="set_group_add_request",
+                        flag=flag,
+                        sub_type="add",
+                        approve=True,
+                    )
+                    logger.info(
+                        "入群验证码申请已批准，等待成员入群后发送群内验证提示 group=%s user=%s",
+                        group_id,
+                        user_id,
+                    )
+                except Exception as exc:
+                    remove_pending_request(group_id, user_id)
+                    logger.error(
+                        "批准入群验证码申请失败 group=%s user=%s detail=%s",
+                        group_id,
+                        user_id,
+                        self._onebot_failure_detail(exc) or type(exc).__name__,
+                    )
             elif approval_mode == "steamid":
                 # SteamID admission is a two-step flow. Approve the QQ request
                 # first so the applicant can enter the group; the actual
@@ -16274,7 +17150,8 @@ class MyPlugin(Star):
                     )
                 return
             else:
-                # 自主验证模式（math、id）：直接处理，不使用审核队列
+                # math/id 模式：先批准 QQ 入群申请，成员进入群后再发送
+                # 群内验证题。验证题不会通过私聊发送。
                 challenge_info = None
                 if approval_mode == "math":
                     from .qqadmin.audit import create_math_challenge
@@ -16299,9 +17176,8 @@ class MyPlugin(Star):
                 
                 try:
                     if approval_mode == "math"and question:
-                        # Persist the challenge before approving the request.
-                        # QQ may emit group_increase immediately after approval;
-                        # the join handler must already see this verification.
+                        # 先保存挑战，再批准申请。QQ 可能在批准后立即发送
+                        # group_increase，入群通知必须已经能读到这条记录。
                         from .qqadmin.audit import (
                             add_audit_request,
                             remove_pending_request,
@@ -16337,13 +17213,13 @@ class MyPlugin(Star):
                             return
 
                         logger.info(
-                            "数学入群申请已批准，等待成员入群后发送验证提示 group=%s user=%s",
+                            "数学入群申请已批准，等待成员入群后发送群内验证提示 group=%s user=%s",
                             group_id,
                             user_id,
                         )
                     elif approval_mode == "id"and verify_id:
-                        # As with math mode, persist verification before QQ
-                        # can emit the member-joined notice.
+                        # 与数学验证相同：先保存挑战，再批准申请，入群后
+                        # 由群消息处理器发送群内 ID。
                         from .qqadmin.audit import (
                             add_audit_request,
                             remove_pending_request,
@@ -16379,7 +17255,7 @@ class MyPlugin(Star):
                             return
 
                         logger.info(
-                            "ID 入群申请已批准，等待成员入群后发送验证提示 group=%s user=%s",
+                            "ID 入群申请已批准，等待成员入群后发送群内验证提示 group=%s user=%s",
                             group_id,
                             user_id,
                         )
@@ -20405,9 +21281,9 @@ class MyPlugin(Star):
             )
         if mode == "code":
             return (
-                f"{intro}，已随机切换为管理员审批。\n"
-                f"审批码：{result.get('approval_code', '')}\n"
-                f"管理员请在 {minutes} 分钟内使用 /同意 <审批码>。"
+                f"{intro}，已随机切换为群内验证码。\n"
+                f"验证码：{result.get('approval_code', '')}\n"
+                f"请在 {minutes} 分钟内在群内直接发送验证码。"
             )
         return f"{intro}，请联系管理员完成入群审核。"
 
@@ -24700,21 +25576,11 @@ class MyPlugin(Star):
         # 先检查是否是请求事件或通知事件
         raw_event = self._get_event_raw_payload(event)
         
-        if isinstance(raw_event, dict):
-            # 处理通知事件（入群邀请）
-            if raw_event.get("post_type") == "notice"and \
-               raw_event.get("notice_type") == "group_increase"and \
-               raw_event.get("sub_type") == "invite":
-                async for result in self._process_group_invite_notice(event, raw_event):
-                    yield result
-                return
-            
-            # 处理通知事件（入群审批通过）
-            if raw_event.get("post_type") == "notice"and \
-               raw_event.get("notice_type") == "group_increase"and \
-               raw_event.get("sub_type") == "approve":
-                await self._process_group_join_notice(event, raw_event)
-                return
+        if isinstance(raw_event, dict) and raw_event.get("post_type") == "notice" and \
+           raw_event.get("notice_type") in {"group_increase", "group_decrease"}:
+            # 入群/退群通知统一由 handle_group_notice_events 处理。
+            # 这里重复处理会让同一个成员被欢迎两次，并重复改写验证状态。
+            return
         
         message_str = event.message_str or ""
         cmd = message_str.lstrip('/').strip()
@@ -26679,7 +27545,7 @@ class MyPlugin(Star):
                         else "请发送当前有效的 5 位验证 ID"
                     )
                 else:
-                    hint = f"请输入审批码: {correct_code}"
+                    hint = f"请输入群内验证码: {correct_code}"
                 
                 error_msg = (
                     f"答案错误！\n"
@@ -28571,13 +29437,20 @@ class MyPlugin(Star):
         from .qqadmin.audit import get_audit_approval_mode, get_verification_timeout
 
         audit_detail = get_group_feature_detail(group_id, "audit", self.config)
-        enable_audit = audit_detail.get("enabled", self.qqadmin_enable_audit)
+        enable_audit = is_feature_enabled(group_id, "audit", self.config)
 
         approval_mode = get_audit_approval_mode(group_id)
         timeout = get_verification_timeout(group_id)
 
-        mode_names = {"direct": "直接审批", "code": "审批码", "math": "算数验证", "id": "ID验证", "steamid": "SteamID查库"}
-        help_text = f"""入群审核｜{'开'if enable_audit else '关'}｜{mode_names.get(approval_mode, approval_mode)}｜超时 {timeout}秒
+        mode_names = {"direct": "直接审批", "code": "群内验证码", "math": "算数验证", "id": "ID验证", "steamid": "SteamID查库"}
+        runtime_reason = self._group_runtime_gate_reason(group_id)
+        runtime_text = {
+            "ready": "可执行",
+            "unauthorized": "未授权",
+            "power_off": "未开机",
+            "invalid_group": "群号无效",
+        }.get(runtime_reason, "不可执行")
+        help_text = f"""入群审核｜{'开'if enable_audit else '关'}｜{mode_names.get(approval_mode, approval_mode)}｜运行状态 {runtime_text}｜超时 {timeout}秒
 /审核通过 @用户　/拒绝 @用户 [理由]　/查看待审核
 /添加白名单 用户ID　/移除白名单 用户ID　/查看白名单
 /开启审核　/关闭审核　/设置审批模式 direct|code|math|id|steamid
@@ -31504,30 +32377,93 @@ class MyPlugin(Star):
         elif approval_mode == "code":
             approval_code = pending.get("approval_code", "")
             yield self._yield_plain(event,
-                f"请等待管理员审批\n"
-                f"审批码: {approval_code}\n"
-                f"审批超时时间: {timeout}秒"
+                f"入群验证码: {approval_code}\n"
+                f"请在群内直接发送验证码\n"
+                f"验证超时时间: {timeout}秒"
             )
         else:
             yield self._yield_plain(event,"未知验证模式，请联系管理员。")
 
     async def _handle_list_pending_audit(self, event: AstrMessageEvent) -> None:
+        requested_group_id = self._normalize_positive_id(
+            self._get_group_id_from_event(event)
+        )
+        if requested_group_id and self._group_runtime_gate_reason(requested_group_id) != "ready":
+            return
         ok, group_id, err = await self._check_admin_group(event)
         if not ok:
             yield err
             return
-        
-        requests = get_audit_requests(group_id)
-        if not requests:
-            yield self._yield_plain(event,"当前没有待审核的入群申请")
+
+        from .qqadmin.audit import get_audit_approval_mode
+        from .qqadmin.group_config import is_feature_enabled
+
+        # Do not rely only on GROUP_REQUEST events. NapCat can show an
+        # application in QQ while AstrBot receives no request event at all.
+        # Refresh the platform queue when the administrator asks to view it.
+        platform_requests, platform_answered, platform_error = (
+            await self._sync_platform_group_requests(event, group_id)
+        )
+        audit_enabled = is_feature_enabled(group_id, "audit", self.config)
+        if platform_error.startswith("group_not_ready:"):
+            reason = platform_error.split(":", 1)[1]
+            reason_text = {
+                "unauthorized": "本群未授权",
+                "power_off": "本群未开机",
+                "invalid_group": "群号无效",
+            }.get(reason, "本群当前不可运行")
+            mode = get_audit_approval_mode(group_id)
+            state = "开启" if audit_enabled else "关闭"
+            yield self._yield_plain(
+                event,
+                f"入群审核：{state}\n"
+                f"审批模式：{mode}\n"
+                f"运行状态：{reason_text}\n"
+                "当前未读取或处理 QQ 入群申请。请先完成群授权并开机。",
+            )
             return
-        
+
+        requests = get_audit_requests(group_id)
+        if not requests and platform_requests:
+            mode_text = "开启" if audit_enabled else "关闭"
+            result = [
+                f"QQ当前有 {len(platform_requests)} 条待处理入群申请。",
+                f"本群入群审核：{mode_text}。",
+            ]
+            if not audit_enabled:
+                result.append("当前未处理：请先开启审核后再执行自动审批或验证。")
+            else:
+                result.append("申请正在提交处理，稍后再次发送“查看待审核”确认状态。")
+            for index, request in enumerate(platform_requests, 1):
+                user_id = request.get("user_id", "未知")
+                nickname = request.get("nickname", "") or "未知"
+                result.append(f"【平台申请 {index}】{nickname}({user_id})")
+            yield self._yield_plain(event, "\n".join(result))
+            return
+        if not requests:
+            if not platform_answered and platform_error:
+                yield self._yield_plain(
+                    event,
+                    f"暂时无法读取 QQ 待审核列表：{platform_error}。请检查 NapCat 连接后重试。",
+                )
+            else:
+                mode = get_audit_approval_mode(group_id)
+                state = "开启" if audit_enabled else "关闭"
+                yield self._yield_plain(
+                    event,
+                    f"入群审核：{state}\n"
+                    f"审批模式：{mode}\n"
+                    "QQ当前待处理申请：0 条\n"
+                    "本地待审核记录：0 条",
+                )
+            return
+
         result = "待审核列表:\n\n"
         for i, req in enumerate(requests, 1):
             user_id = req.get('user_id', '')
             user_name = req.get('user_name', '') or '未知'
             approval_mode = req.get('approval_mode', 'direct')
-            mode_name = {'direct': '直接', 'code': '管理员审批', 'math': '算数验证', 'id': 'ID验证', 'steamid': 'SteamID查库'}.get(approval_mode, approval_mode)
+            mode_name = {'direct': '直接审批', 'code': '群内验证码', 'math': '算数验证', 'id': 'ID验证', 'steamid': 'SteamID查库'}.get(approval_mode, approval_mode)
             verification_question = req.get('verification_question', '')
             approval_code = req.get('approval_code', '')
             
@@ -31536,8 +32472,11 @@ class MyPlugin(Star):
             if verification_question:
                 result += f"    验证: {verification_question}\n"
             if approval_code:
-                result += f"    审批码: {approval_code}\n"
-            result += f"    操作: /同意 {approval_code} 或 /拒绝 {approval_code}\n\n"
+                result += f"    验证码: {approval_code}\n"
+            if approval_mode == "code":
+                result += "    操作: 成员入群后在群内发送上述验证码\n\n"
+            else:
+                result += f"    操作: /同意 {approval_code} 或 /拒绝 {approval_code}\n\n"
         
         result = result.strip()
         yield self._yield_plain(event,result)
@@ -31664,9 +32603,17 @@ class MyPlugin(Star):
             yield self._yield_plain(event,"审批模式只能是: direct, code, math, id, steamid")
             return
 
-        from .qqadmin.audit import set_audit_approval_mode
+        from .qqadmin.audit import set_audit_approval_mode, set_audit_settings
+        from .qqadmin.group_config import set_feature_enabled
         set_audit_approval_mode(group_id, mode)
-        yield self._yield_plain(event,f"已设置审批模式为: {mode} (direct/code/math/id/steamid)")
+        # 选择验证模式本身就代表启用入群审核。此前这里只保存模式，
+        # 但审核开关仍可能是关闭状态，导致 ID/算数验证完全不执行。
+        set_audit_settings(group_id, "enabled", True)
+        set_feature_enabled(group_id, "audit_enabled", True, self.config)
+        yield self._yield_plain(
+            event,
+            f"已启用入群审核，审批模式为: {mode} (direct/code/math/id/steamid)",
+        )
 
     async def _handle_set_max_verify_attempts(self, event: AstrMessageEvent) -> None:
         ok, group_id, err = await self._check_admin_group(event)
@@ -31744,7 +32691,7 @@ class MyPlugin(Star):
 
         result = f"""入群审核设置:
 
-审批模式: {approval_mode} (直接审批/code/审批码/math/算数验证/id/ID验证/steamid/SteamID查库)
+审批模式: {approval_mode} (直接审批/code/群内验证码/math/算数验证/id/ID验证/steamid/SteamID查库)
 超时时间: {timeout}秒
 最大尝试: {max_attempts}次
 验证失败后踢出: {'是' if should_kick_on_verification_failure(group_id) else '否'}"""
@@ -32347,7 +33294,7 @@ class MyPlugin(Star):
                         else "请发送当前有效的 5 位验证 ID"
                     )
                 else:
-                    hint = f"请输入审批码: {correct_code}"
+                    hint = f"请输入群内验证码: {correct_code}"
                 error_msg = (
                     f"答案错误！\n"
                     f"第 {current_attempts}/{max_attempts} 次尝试\n"

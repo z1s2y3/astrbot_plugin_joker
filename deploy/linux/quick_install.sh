@@ -23,6 +23,14 @@ RELEASE_BACKUPS_KEEP="${JOKER_RELEASE_BACKUPS_KEEP:-2}"
 if ! [[ "$RELEASE_BACKUPS_KEEP" =~ ^[0-9]+$ ]] || (( 10#$RELEASE_BACKUPS_KEEP > 20 )); then
   RELEASE_BACKUPS_KEEP=2
 fi
+UPDATE_PACKAGES_KEEP="${JOKER_UPDATE_PACKAGES_KEEP:-2}"
+if ! [[ "$UPDATE_PACKAGES_KEEP" =~ ^[0-9]+$ ]] || (( 10#$UPDATE_PACKAGES_KEEP > 20 )); then
+  UPDATE_PACKAGES_KEEP=2
+fi
+UPDATE_LOGS_KEEP="${JOKER_UPDATE_LOGS_KEEP:-20}"
+if ! [[ "$UPDATE_LOGS_KEEP" =~ ^[0-9]+$ ]] || (( 10#$UPDATE_LOGS_KEEP > 100 )); then
+  UPDATE_LOGS_KEEP=20
+fi
 # Keep host logs and installer leftovers bounded.  These limits only apply to
 # files owned by the system logger or this deployment, never to the portal
 # database, .env, or the live release directory.
@@ -402,19 +410,59 @@ prune_release_backups() {
 prune_env_backups() {
   # Upgrade attempts also create root-owned .env snapshots.  Retain a few for
   # diagnostics, but prevent every background update from consuming /root.
-  local entry candidate_name kept=0 keep_count=3
+  local entry candidate kept=0 keep_count=3
   while IFS= read -r -d '' entry; do
-    candidate_name="$(basename -- "$entry")"
+    candidate="${entry#*:}"
     if (( kept < keep_count )); then
       ((kept += 1))
       continue
     fi
-    echo "清理旧网页配置备份：$entry"
-    rm -f -- "$entry" || echo "警告：无法清理旧配置备份：$entry" >&2
+    echo "清理旧网页配置备份：$candidate"
+    rm -f -- "$candidate" || echo "警告：无法清理旧配置备份：$candidate" >&2
   done < <(
     find /root -mindepth 1 -maxdepth 1 -type f \
       \( -name 'joker-web.env.backup.*' -o -name 'joker-web.env.failed.*' \) \
       -printf '%T@:%p\0' 2>/dev/null | sort -z -rn || true
+  )
+}
+
+prune_update_packages() {
+  # Manual terminal updates leave their source ZIP in joker-install, while
+  # browser uploads remove only the task-specific temporary copy. Keep a small
+  # rollback-friendly set of complete packages and their sidecars, and never
+  # touch unrelated files in the directory.
+  local update_root="$1" entry candidate kept=0
+  [[ -d "$update_root" && ! -L "$update_root" ]] || return 0
+  while IFS= read -r -d '' entry; do
+    candidate="${entry#*:}"
+    if (( kept < 10#$UPDATE_PACKAGES_KEEP )); then
+      ((kept += 1))
+      continue
+    fi
+    echo "清理旧网页更新包：$candidate"
+    rm -f -- "$candidate" "$candidate.sha256" || {
+      echo "警告：无法清理旧网页更新包：$candidate" >&2
+    }
+  done < <(
+    find "$update_root" -mindepth 1 -maxdepth 1 -type f \
+      -name 'Joker_Baota_Remote_v*-all-in-one.zip' \
+      -printf '%T@:%p\0' 2>/dev/null | sort -z -rn || true
+  )
+}
+
+prune_update_logs() {
+  local entry candidate kept=0
+  while IFS= read -r -d '' entry; do
+    candidate="${entry#*:}"
+    if (( kept < 10#$UPDATE_LOGS_KEEP )); then
+      ((kept += 1))
+      continue
+    fi
+    echo "清理旧网页更新日志：$candidate"
+    rm -f -- "$candidate" || echo "警告：无法清理旧网页更新日志：$candidate" >&2
+  done < <(
+    find /var/log/joker-web-updates -mindepth 1 -maxdepth 1 -type f \
+      -name '*.log' -printf '%T@:%p\0' 2>/dev/null | sort -z -rn || true
   )
 }
 
@@ -457,7 +505,9 @@ show_release_version() {
 import json
 import re
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 path = Path(sys.argv[1])
 try:
@@ -1681,6 +1731,10 @@ if [[ "$UPDATE_ROOT" == "$TARGET_DIR" || "$UPDATE_ROOT" == "$TARGET_DIR/"* || "$
   exit 1
 fi
 migrate_update_root "$UPDATE_ROOT"
+# Prune source archives before an upgrade as well as after a successful one.
+# This also bounds disk usage when an earlier upgrade was interrupted.
+prune_update_packages "$UPDATE_ROOT"
+prune_update_logs
 
 cat >"/etc/systemd/system/$SERVICE_NAME.service" <<EOF
 [Unit]
@@ -1940,6 +1994,8 @@ if [[ "$USE_RELEASE_STAGE" == true ]]; then
     echo "警告：上一版未能移动到备份目录，请保留并检查：$PREVIOUS_RELEASE_DIR" >&2
   fi
 fi
+prune_update_packages "$UPDATE_ROOT"
+prune_update_logs
 
 echo
 echo "============================================================"

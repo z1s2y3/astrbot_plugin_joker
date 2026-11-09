@@ -8,7 +8,7 @@ installations may execute it.  This state is deliberately kept in
 from __future__ import annotations
 
 import re
-from datetime import datetime
+from datetime import datetime, timezone
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
@@ -119,7 +119,9 @@ def record_execution_client(db: Session, client_id: object) -> None:
     setting = db.get(PortalSetting, EXECUTION_CLIENT_REGISTRY_SETTING_KEY)
     registry = setting.value_json if setting and isinstance(setting.value_json, dict) else {}
     registry = dict(registry)
-    registry[normalized] = {"last_seen_at": datetime.now().isoformat(timespec="seconds")}
+    registry[normalized] = {
+        "last_seen_at": datetime.now(timezone.utc).isoformat(timespec="seconds")
+    }
     # Keep the registry bounded if a token is accidentally used by many
     # short-lived installations.
     if len(registry) > 500:
@@ -138,6 +140,43 @@ def record_execution_client(db: Session, client_id: object) -> None:
         )
     else:
         setting.value_json = registry
+
+
+def _parse_client_liveness(value: object) -> datetime | None:
+    if isinstance(value, datetime):
+        parsed = value
+    else:
+        try:
+            parsed = datetime.fromisoformat(str(value or ""))
+        except (TypeError, ValueError):
+            return None
+    if parsed.tzinfo is None:
+        parsed = parsed.astimezone()
+    return parsed.astimezone(timezone.utc).replace(tzinfo=None)
+
+
+def get_execution_client_liveness_map(db: Session) -> dict[str, datetime]:
+    setting = db.get(PortalSetting, EXECUTION_CLIENT_REGISTRY_SETTING_KEY)
+    registry = setting.value_json if setting else {}
+    if not isinstance(registry, dict):
+        return {}
+    result: dict[str, datetime] = {}
+    for client_id, value in registry.items():
+        normalized = str(client_id or "").strip()
+        if not _CLIENT_ID_RE.fullmatch(normalized):
+            continue
+        raw_seen = value.get("last_seen_at") if isinstance(value, dict) else value
+        parsed = _parse_client_liveness(raw_seen)
+        if parsed is not None:
+            result[normalized] = parsed
+    return result
+
+
+def get_execution_client_last_seen(db: Session, client_id: object) -> datetime | None:
+    normalized = str(client_id or "").strip()[:64]
+    if not normalized:
+        return None
+    return get_execution_client_liveness_map(db).get(normalized)
 
 
 def list_execution_clients(db: Session) -> list[dict]:
@@ -190,10 +229,24 @@ def list_execution_clients(db: Session) -> list[dict]:
                 normalized,
                 {"client_id": normalized, "last_seen_at": None, "group_count": 0},
             )
-            if item["last_seen_at"] is None:
-                item["last_seen_at"] = str(
-                    value.get("last_seen_at", "") if isinstance(value, dict) else ""
-                ) or None
+            registry_seen = _parse_client_liveness(
+                value.get("last_seen_at") if isinstance(value, dict) else value
+            )
+            database_seen = item["last_seen_at"]
+            if isinstance(database_seen, datetime):
+                if database_seen.tzinfo is not None:
+                    database_seen = database_seen.astimezone(timezone.utc).replace(tzinfo=None)
+            elif database_seen:
+                try:
+                    database_seen = datetime.fromisoformat(str(database_seen))
+                    if database_seen.tzinfo is not None:
+                        database_seen = database_seen.astimezone(timezone.utc).replace(tzinfo=None)
+                except (TypeError, ValueError):
+                    database_seen = None
+            if registry_seen is not None and (
+                database_seen is None or registry_seen > database_seen
+            ):
+                item["last_seen_at"] = registry_seen
 
     return sorted(
         clients.values(),

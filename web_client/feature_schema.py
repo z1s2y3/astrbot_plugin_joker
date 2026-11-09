@@ -173,7 +173,7 @@ FEATURE_SPECS: tuple[FeatureSpec, ...] = (
     FeatureSpec(
         "audit",
         "入群审核",
-        "为新成员和成员邀请启用数学验证、ID 验证、管理员审批或直接审批。审核规则由 Windows 机器人执行，网页只保存本群设置。",
+        "为新成员和成员邀请启用数学验证、ID 验证、群内验证码或直接审批。审核规则由 Windows 机器人执行，网页只保存本群设置。",
         (
             b("enabled", "启用入群审核", False, "关闭后不创建新的审核或验证请求；已存在的待处理请求仍由 Windows 机器人按其当前状态处理。"),
             choice(
@@ -182,12 +182,12 @@ FEATURE_SPECS: tuple[FeatureSpec, ...] = (
                 "math",
                 (
                     ("id", "ID 验证"),
-                    ("code", "管理员审批"),
+                    ("code", "群内验证码"),
                     ("math", "数学验证"),
                     ("direct", "直接审批"),
                     ("steamid", "SteamID 查库"),
                 ),
-                "ID 验证会让新成员按机器人给出的 ID 完成验证；管理员审批会生成审批码；数学验证会让新成员回答算式；直接审批会在收到申请后自动同意；SteamID 查库会先验证当前服务器数据库中存在该 SteamID，成功后才批准入群并设置游戏名片。",
+                "ID 验证会让新成员入群后按机器人给出的 ID 在群内完成验证；群内验证码会在入群后发送验证码；数学验证会让新成员入群后回答算式；直接审批会在收到申请后自动同意；SteamID 查库会先验证当前服务器数据库中存在该 SteamID，成功后才批准入群并设置游戏名片。",
             ),
             i("verification_timeout", "验证或审批超时（秒）", 300, 30, 3600, "超过此时间未完成的请求会由 Windows 审核流程处理为超时。"),
             text("verification_timeout_message", "验证超时提示", "用户 {user_name}({user_id}) 验证超时，{reason}。", TEMPLATE_VARIABLE_HELP),

@@ -1001,7 +1001,9 @@ def get_group_config(group_id: str, global_config: dict = None) -> dict:
     config = load_group_config(group_id)
     if not config:
         # 初始化新群组配置
-        config = init_group_config(group_id, global_config)
+        # 全局配置不能作为运行时回退。新群只创建独立默认配置；
+        # 需要继承全局时必须由管理员显式执行“克隆全局”。
+        config = init_group_config(group_id)
     else:
         # 检查并补全缺失的功能模块（兼容旧版本配置）
         features = config.get("features", {})
@@ -1073,17 +1075,12 @@ def get_group_config(group_id: str, global_config: dict = None) -> dict:
 
 def get_group_feature_setting(group_id: str, feature: str, setting: str = None, global_config: dict = None):
     """获取群功能配置（兼容带有 _enabled 后缀的功能名称）
-    如果分群没有配置，自动克隆全局配置到分群
-    如果分群配置缺少某个功能的配置，从全局配置中读取
+    分群配置始终独立读取。全局配置只用于显式的“克隆全局”操作。
     """
     config = get_group_config(group_id, global_config)
     features = config.get("features", {})
 
-    # 如果 features 为空，说明是新的分群配置，需要克隆全局配置
-    if not features and global_config:
-        features = clone_global_to_group(group_id, global_config)
-        config["features"] = features
-        save_group_config(group_id, config)
+    # get_group_config 已经为新群创建独立默认功能，不读取全局配置。
 
     # 处理带有 _enabled 后缀的功能名称
     feature_name = feature
@@ -1094,19 +1091,9 @@ def get_group_feature_setting(group_id: str, feature: str, setting: str = None, 
     feature_config = features.get(feature_name, {})
     
     if setting:
-        # 如果分群配置中没有该设置，从全局配置中读取
-        if setting not in feature_config and global_config:
-            qqadmin_config = global_config.get("qqadmin", {})
-            global_feature_config = qqadmin_config.get(feature_name, {})
-            return global_feature_config.get(setting)
         return feature_config.get(setting)
 
     # 如果没有指定 setting，返回功能的启用状态（兼容旧调用方式）
-    # 如果分群配置中没有 enabled，从全局配置中读取
-    if "enabled"not in feature_config and global_config:
-        qqadmin_config = global_config.get("qqadmin", {})
-        global_feature_config = qqadmin_config.get(feature_name, {})
-        return global_feature_config.get("enabled", False)
     return feature_config.get("enabled", False)
 
 
@@ -1218,6 +1205,10 @@ def get_group_all_features(group_id: str, global_config: dict = None) -> dict:
 def update_group_feature_config(group_id: str, feature: str, setting: str, value, operator_id: str = ""):
     """更新群功能的具体配置"""
     group_id = _normalize_group_id(group_id)
+    if feature == "audit" and setting == "approval_mode":
+        value = str(value or "math").strip().lower()
+        if value not in {"math", "id", "code", "direct", "steamid"}:
+            value = "math"
     with _cache_lock:
         config = _read_group_config_unlocked(group_id)
         if not config:
@@ -1233,6 +1224,8 @@ def update_group_feature_config(group_id: str, feature: str, setting: str, value
             config["features"][feature] = {}
         old_value = config["features"][feature].get(setting)
         config["features"][feature][setting] = value
+        if feature == "audit" and setting == "approval_mode":
+            config["approval_mode"] = value
         config["updated_at"] = int(time.time())
         _save_group_config_unlocked(group_id, config)
 
@@ -1257,6 +1250,13 @@ def update_group_feature_config(group_id: str, feature: str, setting: str, value
 
 def is_feature_enabled(group_id: str, feature: str, global_config: dict = None) -> bool:
     """检查群功能是否启用"""
+    def _enabled(value) -> bool:
+        if isinstance(value, str):
+            return value.strip().lower() not in {
+                "", "0", "false", "off", "no", "否", "关闭",
+            }
+        return bool(value)
+
     config = get_group_config(group_id, global_config)
 
     # 处理带有 _enabled 后缀的功能名称
@@ -1271,14 +1271,14 @@ def is_feature_enabled(group_id: str, feature: str, global_config: dict = None) 
     if isinstance(features, dict) and feature_name in features:
         feature_config = features.get(feature_name)
         if isinstance(feature_config, dict) and "enabled" in feature_config:
-            return bool(feature_config.get("enabled"))
+            return _enabled(feature_config.get("enabled"))
         if isinstance(feature_config, bool):
             return bool(feature_config)
 
     # 旧结构兼容及部分 features 配置的根级镜像。
     root_value = config.get(f"{feature_name}_enabled", None)
     if root_value is not None:
-        return bool(root_value)
+        return _enabled(root_value)
     nested_mirror = {
         "blacklist": "blacklist_settings",
         "mute": "mute_settings",
@@ -1287,7 +1287,7 @@ def is_feature_enabled(group_id: str, feature: str, global_config: dict = None) 
     if nested_mirror:
         mirror = config.get(nested_mirror)
         if isinstance(mirror, dict) and "enabled" in mirror:
-            return bool(mirror.get("enabled"))
+            return _enabled(mirror.get("enabled"))
     return False
 
 
@@ -1332,7 +1332,7 @@ def set_feature_enabled(group_id: str, feature: str, enabled: bool, global_confi
     with _cache_lock:
         config = _read_group_config_unlocked(group_id)
         if not config:
-            config = clone_global_config_to_group_config(group_id, global_config) if global_config else {
+            config = {
                 "group_id": group_id,
                 "enabled": True,
                 "features": get_default_feature_config(),

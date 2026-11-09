@@ -49,6 +49,7 @@ from . import remote_store, reply_asset_service
 from .security import card_fingerprint, mask_card, normalize_card, validate_group_id
 from .settings import Settings
 from .sync_projection import project_group_config
+from .execution_control import get_execution_client_last_seen, get_execution_client_liveness_map
 from .game_server_secrets import (
     redact_game_server_profile_records,
     store_game_server_profiles,
@@ -782,6 +783,7 @@ def list_user_groups(db: Session, user_id: int) -> list[dict[str, Any]]:
         else {}
     )
     offline_after_seconds = Settings.from_env().offline_after_seconds if remote else 0
+    client_liveness = get_execution_client_liveness_map(db) if remote else {}
     result = []
     for access in accesses:
         snapshot = snapshots.get(str(access.group_id)) if remote else None
@@ -821,7 +823,11 @@ def list_user_groups(db: Session, user_id: int) -> list[dict[str, Any]]:
                 "expires_at": expires_at,
                 "powered_on": features.get("power_status") == "on",
                 "enabled_count": enabled_count,
-                "sync": remote_store.sync_state(snapshot, offline_after_seconds)
+                "sync": remote_store.sync_state(
+                    snapshot,
+                    offline_after_seconds,
+                    client_liveness.get(str(getattr(snapshot, "client_id", "") or "")),
+                )
                 if remote
                 else _local_sync_state(),
             }
@@ -852,6 +858,7 @@ def list_admin_groups(db: Session) -> list[dict[str, Any]]:
     remote = remote_data_mode()
     snapshots = remote_store.list_snapshots(db, group_ids) if remote else {}
     offline_after_seconds = Settings.from_env().offline_after_seconds if remote else 0
+    client_liveness = get_execution_client_liveness_map(db) if remote else {}
     result = []
     for group_id in group_ids:
         snapshot = snapshots.get(str(group_id)) if remote else None
@@ -887,7 +894,11 @@ def list_admin_groups(db: Session) -> list[dict[str, Any]]:
                     and isinstance(features.get(key), dict)
                     and features[key].get("enabled") is True
                 ),
-                "sync": remote_store.sync_state(snapshot, offline_after_seconds)
+                "sync": remote_store.sync_state(
+                    snapshot,
+                    offline_after_seconds,
+                    client_liveness.get(str(getattr(snapshot, "client_id", "") or "")),
+                )
                 if remote
                 else _local_sync_state(),
             }
@@ -2520,11 +2531,17 @@ def _independent_action_features(config: dict[str, Any]) -> list[dict[str, Any]]
     return result
 
 
-def _safe_sync_state(snapshot: Any, offline_after_seconds: int) -> dict[str, Any]:
+def _safe_sync_state(
+    snapshot: Any,
+    offline_after_seconds: int,
+    client_last_seen_at: datetime | None = None,
+) -> dict[str, Any]:
     """Return a complete template-safe sync state for legacy snapshots."""
 
     try:
-        return remote_store.sync_state(snapshot, offline_after_seconds)
+        return remote_store.sync_state(
+            snapshot, offline_after_seconds, client_last_seen_at
+        )
     except Exception:
         # ``revision`` and ``last_seen_at`` were nullable in an early schema;
         # converting them inside ``remote_store.sync_state`` can therefore
@@ -3013,7 +3030,12 @@ def get_group_view(
             offline_after_seconds = Settings.from_env().offline_after_seconds
         except Exception:
             offline_after_seconds = 180
-        sync = _safe_sync_state(snapshot, offline_after_seconds)
+        client_last_seen_at = get_execution_client_last_seen(
+            db, getattr(snapshot, "client_id", "")
+        )
+        sync = _safe_sync_state(
+            snapshot, offline_after_seconds, client_last_seen_at
+        )
         blacklist_summary, stats_summary = _remote_runtime_summaries(snapshot)
         runtime_panels = _normalize_runtime_panels(
             getattr(snapshot, "runtime_json", None) if snapshot is not None else None,

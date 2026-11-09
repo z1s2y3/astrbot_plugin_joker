@@ -1044,9 +1044,23 @@ def set_audit_approval_mode(group_id: str, mode: str):
     if mode not in {"math", "id", "code", "direct", "steamid"}:
         mode = "math"
     set_group_data(group_id, "approval_mode", mode)
+    try:
+        from .group_config import update_group_feature_config
+
+        update_group_feature_config(group_id, "audit", "approval_mode", mode)
+    except Exception:
+        logger.debug("同步入群审核模式到 features.audit 失败 group=%s", group_id, exc_info=True)
 
 def get_audit_approval_mode(group_id: str) -> str:
-    mode = str(get_group_data(group_id, "approval_mode", "math") or "math").strip().lower()
+    mode = str(get_group_data(group_id, "approval_mode", "") or "").strip().lower()
+    if not mode:
+        features = get_group_data(group_id, "features", {})
+        audit_config = features.get("audit", {}) if isinstance(features, dict) else {}
+        mode = str(
+            audit_config.get("approval_mode", "math")
+            if isinstance(audit_config, dict)
+            else "math"
+        ).strip().lower()
     if mode not in {"math", "id", "code", "direct", "steamid"}:
         mode = "math"
         set_group_data(group_id, "approval_mode", mode)
@@ -1144,6 +1158,9 @@ def get_audit_settings(group_id: str) -> dict:
     }
 
 def set_audit_settings(group_id: str, key: str, value):
+    if key == "approval_mode":
+        set_audit_approval_mode(group_id, value)
+        return
     set_group_data(group_id, key, value)
 
 def get_user_audit_history(group_id: str, user_id: str) -> list:

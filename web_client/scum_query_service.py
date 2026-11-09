@@ -44,9 +44,17 @@ class LinuxScumQueryService:
         relay_url, relay_key = self._config_values()
         signature = (relay_url, relay_key)
         if self._client is None or self._signature != signature:
+            if self._client is not None:
+                await self._client.close()
             self._client = LinuxScumProvider(relay_url=relay_url, relay_key=relay_key)
             self._signature = signature
         return self._client
+
+    async def close(self) -> None:
+        if self._client is not None:
+            await self._client.close()
+            self._client = None
+            self._signature = None
 
     async def query(self, operation: str, argument: Any = "") -> str:
         """Execute one bounded read-only SCUM operation."""

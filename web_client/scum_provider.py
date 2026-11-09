@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import Any
 from urllib.parse import urlsplit
@@ -73,8 +74,36 @@ class LinuxScumProvider:
             else self.DEFAULT_RELAY_URL
         )
         self.relay_key = str(relay_key or "").strip()
+        self._client: httpx.AsyncClient | None = None
+        self._client_lock = asyncio.Lock()
         if configured_url and not self.relay_url:
             logger.warning("Ignoring malformed SCUM_RELAY_URL")
+
+    async def close(self) -> None:
+        client = self._client
+        self._client = None
+        if client is not None and not client.is_closed:
+            await client.aclose()
+
+    async def _get_client(self) -> httpx.AsyncClient:
+        client = self._client
+        if client is not None and not client.is_closed:
+            return client
+        async with self._client_lock:
+            client = self._client
+            if client is not None and not client.is_closed:
+                return client
+            self._client = httpx.AsyncClient(
+                timeout=httpx.Timeout(self.REQUEST_TIMEOUT_SECONDS, connect=10.0),
+                follow_redirects=True,
+                trust_env=False,
+                headers={
+                    "Accept": "application/json",
+                    "Authorization": f"Bearer {self.relay_key}",
+                    "User-Agent": "Joker-Linux-Portal/1.11",
+                },
+            )
+            return self._client
 
     @staticmethod
     def _normalize_relay_url(value: object) -> str:
@@ -195,50 +224,60 @@ class LinuxScumProvider:
         if not self.relay_url:
             return None, "SCUM 中转地址无效，请检查 Linux 网页服务器的 SCUM_RELAY_URL。"
 
-        try:
-            async with httpx.AsyncClient(
-                timeout=httpx.Timeout(self.REQUEST_TIMEOUT_SECONDS, connect=10.0),
-                follow_redirects=True,
-                trust_env=False,
-                headers={
-                    "Accept": "application/json",
-                    "Authorization": f"Bearer {self.relay_key}",
-                    "User-Agent": "Joker-Linux-Portal/1.11",
-                },
-            ) as client:
-                response = await client.get(f"{self.relay_url}{path}", params=params)
+        client = await self._get_client()
+        retryable_statuses = {408, 425, 429, 500, 502, 503, 504}
+        for attempt in range(3):
             try:
-                payload = response.json()
-            except (TypeError, ValueError):
-                payload = None
+                response = await client.get(f"{self.relay_url}{path}", params=params)
+                try:
+                    payload = response.json()
+                except (TypeError, ValueError):
+                    payload = None
 
-            if response.status_code >= 400:
-                detail = self._pick(payload, "error", "detail")
-                if response.status_code == 401:
-                    return None, "SCUM 中转站密钥缺失或无效，请检查 SCUM_RELAY_KEY。"
-                if response.status_code == 404:
-                    if path.startswith("/api/servers/"):
-                        return None, "未找到该 SCUM 服务器，请检查服务器 ID。"
-                    return None, "SCUM 中转站接口不存在，请检查 SCUM_RELAY_URL。"
-                if response.status_code == 429:
-                    return None, "SCUM 中转站正在处理其他查询，请稍后重试。"
-                if detail:
-                    return None, self._clean_text(detail, 240)
-                if response.status_code in {502, 503}:
-                    return None, "SCUM 中转站暂时无法读取 BattleMetrics 数据，请稍后重试。"
-                return None, f"SCUM 中转站请求失败：HTTP {response.status_code}。"
-            if not isinstance(payload, dict):
-                return None, "SCUM 中转站返回了无效数据，请稍后重试。"
-            return payload, None
-        except httpx.TimeoutException:
-            logger.warning("SCUM relay request timed out: %s", path)
-            return None, "SCUM 中转站请求超时，请稍后重试。"
-        except httpx.RequestError as exc:
-            logger.warning("SCUM relay request failed: %s", type(exc).__name__)
-            return None, "无法连接 SCUM 中转站，请检查 Linux 网页服务器的出站网络。"
-        except Exception as exc:  # pragma: no cover - defensive provider boundary
-            logger.warning("SCUM relay request failed: %s", type(exc).__name__)
-            return None, "SCUM 中转站查询失败，请稍后重试。"
+                if response.status_code >= 400:
+                    detail = self._pick(payload, "error", "detail")
+                    if response.status_code == 401:
+                        return None, "SCUM 中转站密钥缺失或无效，请检查 SCUM_RELAY_KEY。"
+                    if response.status_code == 404:
+                        if path.startswith("/api/servers/"):
+                            return None, "未找到该 SCUM 服务器，请检查服务器 ID。"
+                        return None, "SCUM 中转站接口不存在，请检查 SCUM_RELAY_URL。"
+                    if response.status_code in retryable_statuses and attempt < 2:
+                        retry_after = response.headers.get("Retry-After", "")
+                        try:
+                            delay = min(8.0, max(0.3, float(retry_after)))
+                        except ValueError:
+                            delay = 0.6 * (attempt + 1)
+                        await asyncio.sleep(delay)
+                        continue
+                    if response.status_code == 429:
+                        return None, "SCUM 中转站正在处理其他查询，请稍后重试。"
+                    if detail:
+                        return None, self._clean_text(detail, 240)
+                    if response.status_code in {502, 503}:
+                        return None, "SCUM 中转站暂时无法读取 BattleMetrics 数据，请稍后重试。"
+                    return None, f"SCUM 中转站请求失败：HTTP {response.status_code}。"
+                if not isinstance(payload, dict):
+                    return None, "SCUM 中转站返回了无效数据，请稍后重试。"
+                return payload, None
+            except httpx.TimeoutException:
+                logger.warning("SCUM relay request timed out: %s attempt=%s", path, attempt + 1)
+                if attempt >= 2:
+                    return None, "SCUM 中转站请求超时，请稍后重试。"
+            except httpx.RequestError as exc:
+                logger.warning(
+                    "SCUM relay request failed: %s attempt=%s",
+                    type(exc).__name__,
+                    attempt + 1,
+                )
+                if attempt >= 2:
+                    return None, "无法连接 SCUM 中转站，请检查 Linux 网页服务器的出站网络。"
+            except Exception as exc:  # pragma: no cover - defensive provider boundary
+                logger.warning("SCUM relay request failed: %s", type(exc).__name__)
+                return None, "SCUM 中转站查询失败，请稍后重试。"
+            await asyncio.sleep(0.6 * (attempt + 1))
+
+        return None, "SCUM 中转站查询失败，请稍后重试。"
 
     async def search_servers(self, keyword: str) -> str:
         value = str(keyword or "").strip()

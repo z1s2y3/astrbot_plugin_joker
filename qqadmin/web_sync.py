@@ -271,6 +271,7 @@ _MAX_CONSOLE_EVENTS_PER_EXCHANGE = 80
 # Windows client must wait slightly longer than that, otherwise it reports a
 # local timeout even when Linux is about to return its structured response.
 _EXCHANGE_TIMEOUT_SECONDS = 50.0
+_HEARTBEAT_TIMEOUT_SECONDS = 8.0
 
 # These are deliberately fixed local messages.  Never render an exception
 # string here: TLS/proxy exceptions can contain a full URL or credentials from
@@ -748,6 +749,12 @@ def build_group_payload(
     payload: dict[str, Any] = {"group_id": str(group_id)}
     if include_config:
         payload["config"] = _sync_projection_module().project_group_config(config)
+        # Keep the local edit time outside the privacy-limited projection so
+        # Linux can resolve a Windows command racing a pending web revision.
+        try:
+            payload["local_updated_at"] = max(0, int(config.get("updated_at", 0) or 0))
+        except (TypeError, ValueError, OverflowError):
+            payload["local_updated_at"] = 0
     if include_auth:
         if auth_info is None:
             # Compatibility path for existing callers outside ``sync_once``.
@@ -1796,6 +1803,10 @@ class PortalSyncClient:
         # AsyncClient for every heartbeat/asset fetch repeats DNS, TCP and
         # TLS setup and was the largest avoidable delay in remote mode.
         self._http_clients: dict[str, httpx.AsyncClient] = {}
+        # Older Linux portals do not expose the lightweight liveness endpoint.
+        # Disable that probe after a confirmed 404 and keep using the normal
+        # exchange until the portal is upgraded.
+        self._heartbeat_supported = True
 
     def _get_http_client(self, kind: str, timeout: Any) -> httpx.AsyncClient:
         """Return a reusable HTTP client for one bounded request class."""
@@ -4064,6 +4075,46 @@ class PortalSyncClient:
             }
         return True
 
+    async def _send_liveness_heartbeat(
+        self,
+        game_authorizations: dict[str, dict],
+        auth_source_complete: bool,
+    ) -> None:
+        """Refresh portal liveness without waiting for a full sync transaction."""
+        if not self._heartbeat_supported:
+            return
+        game_auth = [
+            {"group_id": str(group_id), "auth": auth}
+            for group_id, auth in game_authorizations.items()
+            if self._valid_failure_group_id(group_id) and isinstance(auth, dict)
+        ]
+        payload = {
+            "client_id": self.client_id,
+            "auth_source_complete": bool(auth_source_complete),
+            "game_auth": game_auth[:5000],
+        }
+        try:
+            result = await self._post_json(
+                "/api/sync/v1/heartbeat",
+                payload,
+                httpx.Timeout(_HEARTBEAT_TIMEOUT_SECONDS, connect=4.0),
+                client_kind="heartbeat",
+            )
+            if isinstance(result, dict) and result.get("status") == "ok":
+                self._connection_state = "online"
+        except _PortalSyncProtocolError as exc:
+            if exc.code == "http_status_404":
+                self._heartbeat_supported = False
+                logger.debug("Linux 网页未提供轻量心跳接口，继续使用兼容同步路径")
+            else:
+                logger.debug("网页轻量心跳失败 code=%s", exc.code)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            # The full exchange remains the source of truth for configuration;
+            # a heartbeat failure alone must never discard local data.
+            logger.debug("网页轻量心跳失败", exc_info=True)
+
     async def run_forever(self) -> None:
         if not self.configured:
             logger.warning("网页同步未启动：%s", self.configuration_error)
@@ -4153,6 +4204,10 @@ class PortalSyncClient:
         if game_auth_complete:
             group_ids.update(game_auth_group_ids)
         local_group_ids = set(group_ids)
+        await self._send_liveness_heartbeat(
+            game_authorizations,
+            auth_source_complete,
+        )
         if config_source_complete and callable(self.local_group_ids_callback):
             try:
                 listed_group_ids = self.local_group_ids_callback()
@@ -4899,16 +4954,15 @@ class PortalSyncClient:
                 if (
                     is_current_web_revision
                     and group_id in locally_changed_config_group_ids
-                    and group_id not in (self._server_managed_group_ids or set())
                     and group_id not in self._manual_web_pull_group_ids
                     and change.get("manual_pull") is not True
                 ):
-                    # Windows is the execution-side source of truth.  Do not
-                    # write an older pending portal projection over a local
-                    # command deletion/change that is already being uploaded
-                    # in this same exchange.  ACK the exact pending revision
-                    # with the current Windows projection: the server then
-                    # resolves the stale revision without another full poll.
+                    # A Windows command/config edit must not be overwritten by
+                    # an older web revision, including for groups that are
+                    # already registered in the portal-managed scope. The
+                    # local edit is the actionable change that triggered this
+                    # exchange; acknowledge the pending web revision with the
+                    # current Windows projection so the portal can converge.
                     local_projection = projection_module.project_group_config(current)
                     if isinstance(local_projection, dict):
                         local_projection = dict(local_projection)

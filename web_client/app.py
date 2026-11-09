@@ -167,6 +167,7 @@ from .integration_service import (
 from .runner_interface import get_runner_deployment, set_linux_migration_prepared
 from .execution_control import (
     execution_control_for_client,
+    get_execution_client_last_seen,
     get_execution_control,
     list_execution_clients,
     record_execution_client,
@@ -1059,6 +1060,66 @@ def _process_sync_exchange(
         db.close()
 
 
+def _process_sync_heartbeat(
+    client_id: str,
+) -> dict:
+    """Persist client liveness without waiting for group-scoped database rows."""
+    db = get_session_factory()()
+    try:
+        record_execution_client(db, client_id)
+        execution_control = execution_control_for_client(db, client_id)
+        db.commit()
+        if not execution_control["client_allowed"]:
+            return {
+                "status": "ok",
+                "blocked": True,
+                "client_id": client_id,
+                "execution_control": execution_control,
+                "touched": 0,
+            }
+        return {
+            "status": "ok",
+            "client_id": client_id,
+            "touched": 0,
+            "execution_control": execution_control,
+        }
+    except Exception:
+        db.rollback()
+        raise
+    finally:
+        db.close()
+
+
+def _process_sync_heartbeat_details(
+    client_id: str,
+    game_auth: list,
+    auth_source_complete: bool,
+) -> None:
+    db = get_session_factory()()
+    try:
+        remote_store.touch_client_liveness(db, client_id)
+        if auth_source_complete:
+            for item in game_auth[:5000]:
+                if not isinstance(item, dict):
+                    continue
+                group_id = str(item.get("group_id", "") or "").strip()
+                if not remote_store.GROUP_ID_RE.fullmatch(group_id):
+                    continue
+                remote_store.apply_game_authorization_heartbeat(
+                    db, client_id, group_id, item.get("auth")
+                )
+        db.commit()
+    except Exception:
+        db.rollback()
+        logger.warning(
+            "Windows 心跳辅助同步失败，客户端在线状态已独立保存 client=%s",
+            client_id,
+            exc_info=True,
+        )
+    finally:
+        db.close()
+
+
 def _process_sync_ack(client_id: str, groups: list) -> dict:
     """Apply a Windows ACK in the same worker-thread transaction boundary."""
 
@@ -1689,7 +1750,15 @@ def _group_edit_status(
     and accepting edits could target the wrong local group.
     """
 
-    auth_state = auth if isinstance(auth, dict) else authorization_state(group_id, db)
+    try:
+        auth_state = auth if isinstance(auth, dict) else authorization_state(group_id, db)
+    except Exception:
+        try:
+            db.rollback()
+        except Exception:
+            logger.debug("Unable to rollback after group authorization read failure", exc_info=True)
+        logger.exception("Unable to read group authorization group_id=%s", group_id)
+        return False, "分群授权状态暂时无法读取，请刷新页面后重试。"
     if not remote_data_mode():
         if not bool(auth_state.get("active")):
             return False, "该群授权无效，不能执行配置变更或开关机。"
@@ -1702,12 +1771,28 @@ def _group_edit_status(
     # made the group page say only “授权无效” while the bot was online.
     sync_state = sync if isinstance(sync, dict) else None
     if sync_state is None:
-        snapshot = remote_store.get_snapshot(db, group_id)
         try:
-            offline_after = Settings.from_env().offline_after_seconds
+            snapshot = remote_store.get_snapshot(db, group_id)
+            try:
+                offline_after = Settings.from_env().offline_after_seconds
+            except Exception:
+                offline_after = 180
+            sync_state = remote_store.sync_state(
+                snapshot,
+                offline_after,
+                get_execution_client_last_seen(
+                    db, getattr(snapshot, "client_id", "")
+                ),
+            )
         except Exception:
-            offline_after = 180
-        sync_state = remote_store.sync_state(snapshot, offline_after)
+            try:
+                db.rollback()
+            except Exception:
+                logger.debug("Unable to rollback after group sync state read failure", exc_info=True)
+            logger.exception("Unable to read group sync state group_id=%s", group_id)
+            return False, "分群同步状态暂时无法读取，请刷新页面后重试。"
+    if not isinstance(sync_state, dict):
+        return False, "分群同步状态格式无效，请先让 Windows 完成一次同步。"
     if str(sync_state.get("status", "") or "") == "unavailable":
         return (
             False,
@@ -2093,6 +2178,7 @@ def create_app() -> FastAPI:
             # Do not leave pending game calls/futures attached to a worker
             # when Uvicorn is reloaded or the service is stopped gracefully.
             await app.state.game_ws.close()
+            await app.state.scum_query.close()
 
     app = FastAPI(
         title=settings.portal_name,
@@ -3662,6 +3748,51 @@ def create_app() -> FastAPI:
             )
             return JSONResponse(
                 {"status": "error", "code": "sync_storage_busy"},
+                status_code=503,
+                headers={"Retry-After": "5"},
+            )
+
+    @app.post("/api/sync/v1/heartbeat")
+    async def sync_heartbeat(request: Request, background_tasks: BackgroundTasks):
+        """Refresh Windows liveness without waiting for a full exchange."""
+        _require_sync_token(request)
+        if settings.data_mode != "remote":
+            return JSONResponse(
+                {"status": "error", "code": "remote_mode_disabled"},
+                status_code=409,
+            )
+        pepper_mismatch = _card_pepper_mismatch_response(request)
+        if pepper_mismatch is not None:
+            return pepper_mismatch
+        try:
+            payload = await request.json()
+        except (UnicodeDecodeError, ValueError):
+            return JSONResponse({"detail": "心跳数据格式无效"}, status_code=400)
+        if not isinstance(payload, dict):
+            return JSONResponse({"detail": "心跳数据格式无效"}, status_code=400)
+        client_id, client_id_error = _extract_sync_client_id(request, payload)
+        if client_id_error is not None:
+            return client_id_error
+        game_auth = payload.get("game_auth", [])
+        if not isinstance(game_auth, list) or len(game_auth) > 5000:
+            return JSONResponse({"detail": "游戏心跳数据格式无效"}, status_code=400)
+        auth_source_complete = payload.get("auth_source_complete", True)
+        if not isinstance(auth_source_complete, bool):
+            return JSONResponse({"detail": "授权来源状态格式无效"}, status_code=400)
+        try:
+            result = await run_in_threadpool(_process_sync_heartbeat, client_id)
+            if result.get("status") == "ok" and not result.get("blocked"):
+                background_tasks.add_task(
+                    _process_sync_heartbeat_details,
+                    client_id,
+                    game_auth,
+                    auth_source_complete,
+                )
+            return result
+        except Exception:
+            logger.exception("Windows 轻量心跳处理失败 client=%s", client_id)
+            return JSONResponse(
+                {"detail": "Windows 心跳暂时无法写入", "code": "sync_storage_busy"},
                 status_code=503,
                 headers={"Retry-After": "5"},
             )
@@ -8286,6 +8417,8 @@ def create_app() -> FastAPI:
                     group_id,
                     getattr(request.state, "request_id", ""),
                 )
+        if not isinstance(view, dict):
+            view = _fallback_group_view(group_id)
         try:
             console_settings = get_console_settings(db)
         except Exception:
@@ -8302,6 +8435,21 @@ def create_app() -> FastAPI:
                 "keywords": [],
                 "suggested_keywords": list(DEFAULT_CONSOLE_KEYWORDS),
             }
+        if not isinstance(console_settings, dict):
+            console_settings = {}
+        console_settings = {
+            "enabled": bool(console_settings.get("enabled", False)),
+            "messages_enabled": bool(console_settings.get("messages_enabled", False)),
+            "retention": console_settings.get("retention", 2000),
+            "keywords": console_settings.get("keywords", []),
+            "suggested_keywords": console_settings.get(
+                "suggested_keywords", list(DEFAULT_CONSOLE_KEYWORDS)
+            ),
+        }
+        if not isinstance(console_settings["keywords"], list):
+            console_settings["keywords"] = []
+        if not isinstance(console_settings["suggested_keywords"], list):
+            console_settings["suggested_keywords"] = list(DEFAULT_CONSOLE_KEYWORDS)
         console_filter = str(request.query_params.get("console_keywords", "")).strip()
         console_filter_keywords = normalize_console_keywords(console_filter)
         console_user_id = str(request.query_params.get("console_user_id", "")).strip()[:20]
@@ -8420,12 +8568,22 @@ def create_app() -> FastAPI:
             (str(item) for item in clone_sources if str(item) != str(group_id)),
             key=lambda value: (len(value), value),
         )
-        can_edit, edit_block_reason = _group_edit_status(
-            group_id,
-            db,
-            auth=view.get("auth"),
-            sync=view.get("sync"),
-        )
+        try:
+            can_edit, edit_block_reason = _group_edit_status(
+                group_id,
+                db,
+                auth=view.get("auth"),
+                sync=view.get("sync"),
+            )
+        except Exception:
+            db.rollback()
+            logger.exception(
+                "Unable to determine group edit state group_id=%s request_id=%s",
+                group_id,
+                getattr(request.state, "request_id", ""),
+            )
+            can_edit = False
+            edit_block_reason = "分群状态暂时无法确认，请刷新页面后重试。"
         try:
             game_status = get_group_game_status(group_id, db)
         except Exception:
@@ -8435,6 +8593,17 @@ def create_app() -> FastAPI:
                 group_id,
                 getattr(request.state, "request_id", ""),
             )
+            game_status = {
+                "state": "unknown",
+                "active": False,
+                "expire": 0,
+                "expire_text": "暂时无法读取",
+                "card_mask": "",
+                "client_id": "",
+                "last_heartbeat_text": "暂时无法读取 Windows 心跳",
+                "message": "游戏心跳状态暂时无法读取，请稍后刷新。",
+            }
+        if not isinstance(game_status, dict):
             game_status = {
                 "state": "unknown",
                 "active": False,
@@ -8471,12 +8640,22 @@ def create_app() -> FastAPI:
                 "socketio_path": "/socket.io",
                 "bot_type": "bot_main",
             }
+        if not isinstance(websocket_site_settings, dict):
+            websocket_site_settings = {
+                "enabled": False,
+                "server_url": "",
+                "socketio_path": "/socket.io",
+                "bot_type": "bot_main",
+            }
         game_license_verified = False
         verified_games = request.session.get("game_license_verified", {})
         if isinstance(verified_games, dict):
             verified_item = verified_games.get(str(group_id))
             if isinstance(verified_item, dict):
-                verified_expire = int(verified_item.get("expire", 0) or 0)
+                try:
+                    verified_expire = int(verified_item.get("expire", 0) or 0)
+                except (TypeError, ValueError, OverflowError):
+                    verified_expire = 0
                 game_license_verified = bool(
                     verified_expire == -1
                     or (
@@ -8484,6 +8663,12 @@ def create_app() -> FastAPI:
                         and game_status.get("active")
                     )
                 )
+        if not isinstance(websocket_access_status, dict):
+            websocket_access_status = {
+                "state": "missing",
+                "configured": False,
+                "card_mask": "",
+            }
         websocket_license_verified = bool(
             websocket_access_status.get("state") == "verified"
             and websocket_access_status.get("configured")
@@ -8506,19 +8691,26 @@ def create_app() -> FastAPI:
                 "portal_url": "",
                 "endpoint_path": "/api/sync/v1/ws",
             }
+        if not isinstance(game_websocket_config, dict):
+            game_websocket_config = {}
         game_websocket_config_ready = bool(
             game_websocket_runtime_enabled(game_websocket_config)
             and game_websocket_config.get("game_websocket_token_configured")
         )
+        feature_rows_for_game = view.get("features", [])
+        if not isinstance(feature_rows_for_game, list):
+            feature_rows_for_game = []
         game_server_feature = next(
             (
                 item.get("values", {})
-                for item in view.get("features", [])
+                for item in feature_rows_for_game
                 if isinstance(item, dict)
                 and getattr(item.get("spec"), "key", "") == "game_servers"
             ),
             {},
         )
+        if not isinstance(game_server_feature, dict):
+            game_server_feature = {}
         game_server_profiles = game_server_feature.get("profiles", [])
         group_executor_available = bool(
             game_server_feature.get("enabled")
@@ -8532,18 +8724,32 @@ def create_app() -> FastAPI:
         global_executor_available = bool(
             isinstance(global_executor, dict) and global_executor.get("enabled")
         )
-        game_transport = game_websocket_user_view(
-            game_websocket_config,
-            group_authorized=(
-                True
-                if game_status.get("state") == "local"
-                else bool(game_status.get("active"))
-            ),
-            executor_available=bool(
-                group_executor_available or global_executor_available
-            ),
-            local_mode=game_status.get("state") == "local",
-        )
+        try:
+            game_transport = game_websocket_user_view(
+                game_websocket_config,
+                group_authorized=(
+                    True
+                    if game_status.get("state") == "local"
+                    else bool(game_status.get("active"))
+                ),
+                executor_available=bool(
+                    group_executor_available or global_executor_available
+                ),
+                local_mode=game_status.get("state") == "local",
+            )
+        except Exception:
+            logger.warning(
+                "Unable to build game transport view group_id=%s request_id=%s",
+                group_id,
+                getattr(request.state, "request_id", ""),
+                exc_info=True,
+            )
+            game_transport = game_websocket_user_view(
+                {},
+                group_authorized=False,
+                executor_available=False,
+                local_mode=False,
+            )
         game_websocket_ready = bool(game_transport["callable"])
         public_game_websocket_config = {
             "enabled": bool(game_websocket_config.get("enabled")),
@@ -8662,6 +8868,14 @@ def create_app() -> FastAPI:
         except (PortalError, ValueError) as exc:
             db.rollback()
             _flash(request, str(exc) or "群管配置复制失败", "error")
+        except Exception:
+            db.rollback()
+            logger.exception(
+                "Unable to clone group configuration group_id=%s request_id=%s",
+                group_id,
+                getattr(request.state, "request_id", ""),
+            )
+            _flash(request, "群管配置复制失败，请稍后重试。", "error")
         return _redirect(_group_path(user, group_id, "#clone-config"))
 
     @app.post("/user/groups/{group_id}/sync-refresh")
@@ -8765,7 +8979,12 @@ def create_app() -> FastAPI:
                 offline_after_seconds = Settings.from_env().offline_after_seconds
             except Exception:
                 offline_after_seconds = 180
-            sync = _safe_sync_state(snapshot, offline_after_seconds)
+            client_last_seen_at = get_execution_client_last_seen(
+                db, getattr(snapshot, "client_id", "")
+            )
+            sync = _safe_sync_state(
+                snapshot, offline_after_seconds, client_last_seen_at
+            )
         else:
             sync = {
                 "online": True,
@@ -9039,17 +9258,29 @@ def create_app() -> FastAPI:
             return access
         form = await _validated_form(request)
         powered_on = str(form.get("power", "")) == "on"
-        set_power(group_id, powered_on, db, user.id)
-        _snapshot_and_log(
-            request,
-            db,
-            user,
-            group_id,
-            "power",
-            "网页开机" if powered_on else "网页关机",
-            {"power_status": "on" if powered_on else "off"},
-        )
-        _flash(request, "已开机" if powered_on else "已关机", "success")
+        try:
+            set_power(group_id, powered_on, db, user.id)
+            _snapshot_and_log(
+                request,
+                db,
+                user,
+                group_id,
+                "power",
+                "网页开机" if powered_on else "网页关机",
+                {"power_status": "on" if powered_on else "off"},
+            )
+            _flash(request, "已开机" if powered_on else "已关机", "success")
+        except (PortalError, ValueError) as exc:
+            db.rollback()
+            _flash(request, str(exc), "error")
+        except Exception:
+            db.rollback()
+            logger.exception(
+                "Unable to change group power group_id=%s request_id=%s",
+                group_id,
+                getattr(request.state, "request_id", ""),
+            )
+            _flash(request, "分群开关机操作失败，请检查网页数据库和 Windows 同步日志。", "error")
         return _redirect(_group_path(user, group_id))
 
     @app.post("/user/groups/{group_id}/features/scum/reset")
