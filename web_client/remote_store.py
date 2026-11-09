@@ -423,13 +423,32 @@ def apply_game_authorization_heartbeat(
     except (TypeError, ValueError, OverflowError):
         activated_at = 0
     row = db.scalar(
-        select(GameAuthorization)
-        .where(GameAuthorization.group_id == normalized_group_id)
-        .with_for_update()
+        select(GameAuthorization).where(
+            GameAuthorization.group_id == normalized_group_id
+        )
     )
     if row is None:
         row = GameAuthorization(group_id=normalized_group_id)
         db.add(row)
+    else:
+        # Heartbeats arrive frequently and do not need a pessimistic read lock.
+        # Avoid touching an unchanged row for every exchange; this keeps the
+        # background heartbeat from competing with configuration writes.
+        current_heartbeat = row.last_heartbeat_at
+        heartbeat_is_fresh = isinstance(current_heartbeat, datetime) and (
+            utcnow() - current_heartbeat <= timedelta(seconds=20)
+        )
+        if (
+            heartbeat_is_fresh
+            and row.client_id == normalized_client_id
+            and row.state == state
+            and int(row.expire or 0) == expire
+            and row.card_fingerprint == fingerprint
+            and row.card_mask == (card_mask if fingerprint else "")
+            and int(row.activated_at or 0) == activated_at
+            and row.user_id == str(auth.get("user_id", "") or "")[:32]
+        ):
+            return
     row.client_id = normalized_client_id
     row.state = state
     row.expire = expire

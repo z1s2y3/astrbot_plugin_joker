@@ -771,6 +771,7 @@ def _process_sync_exchange(
     game_auth_source_complete: bool | None = None,
     public_origin: str = "",
     local_group_ids: list | None = None,
+    defer_runtime_summaries: bool = False,
 ) -> dict:
     """Run one Windows exchange away from Uvicorn's event loop.
 
@@ -780,6 +781,9 @@ def _process_sync_exchange(
     unrelated customer form requests while preserving transaction ordering.
     """
 
+    reported_runtime_summaries = runtime_summaries or {}
+    if defer_runtime_summaries:
+        runtime_summaries = {}
     # The request dependency session belongs to Uvicorn's event-loop thread.
     # Never pass it to this worker: SQLAlchemy sessions are intentionally not
     # thread-safe and a slow sync can otherwise corrupt a concurrent request.
@@ -816,6 +820,7 @@ def _process_sync_exchange(
         # configuration/auth sources were read completely.
         console_events = []
         runtime_summaries = {}
+        reported_runtime_summaries = {}
         apply_failures = []
         local_group_ids = []
 
@@ -941,7 +946,7 @@ def _process_sync_exchange(
         # member directory is read-only; this acknowledgement only confirms
         # routing and never sends member rows back to Windows.
         runtime_accepted_group_ids: list[str] = []
-        for raw_group_id in (runtime_summaries or {}):
+        for raw_group_id in (reported_runtime_summaries or {}):
             group_id = str(raw_group_id).strip()
             if group_id not in bound_group_id_set:
                 continue
@@ -1128,6 +1133,44 @@ def _process_sync_heartbeat_details(
         )
     finally:
         db.close()
+
+
+def _process_sync_runtime_summaries(
+    client_id: str,
+    runtime_summaries: dict,
+) -> None:
+    """Persist runtime panels one group at a time after the main exchange."""
+
+    for raw_group_id, raw_runtime in list(runtime_summaries.items())[:5000]:
+        group_id = str(raw_group_id or "").strip()
+        if not remote_store.GROUP_ID_RE.fullmatch(group_id):
+            continue
+        db = get_session_factory()()
+        try:
+            remote_store.apply_bot_exchange(
+                db,
+                client_id,
+                [],
+                [group_id],
+                authoritative_group_ids=False,
+                runtime_summaries={group_id: raw_runtime},
+                config_source_complete=True,
+                auth_source_complete=True,
+                sync_scope_complete=True,
+                game_auth_source_complete=False,
+                local_group_ids=[group_id],
+            )
+            db.commit()
+        except Exception:
+            db.rollback()
+            logger.warning(
+                "Windows 运行摘要后台写入失败 client=%s group=%s",
+                client_id,
+                group_id,
+                exc_info=True,
+            )
+        finally:
+            db.close()
 
 
 def _process_sync_ack(client_id: str, groups: list) -> dict:
@@ -2248,6 +2291,10 @@ def create_app() -> FastAPI:
     # can sync in parallel, while writes for the same group remain ordered.
     app.state.sync_group_locks = {}
     app.state.sync_group_locks_guard = asyncio.Lock()
+    # Repeated uploads from an unbound Windows client should not occupy a
+    # database worker for every retry. Keep this short so a newly authorized
+    # group becomes eligible quickly.
+    app.state.message_cache_rejected_until = {}
     app.state.dummy_password_hash = hash_password("dummy-password-for-timing-check")
     app.add_middleware(
         PortalSessionMiddleware,
@@ -3898,7 +3945,6 @@ def create_app() -> FastAPI:
             for value in [
                 *known_group_ids,
                 *local_group_ids,
-                *runtime_summaries.keys(),
                 *(
                     item.get("group_id")
                     for item in groups
@@ -3912,6 +3958,13 @@ def create_app() -> FastAPI:
             ]
             if str(value or "").strip()
         }
+        def queue_runtime_summaries() -> None:
+            if config_source_complete and runtime_summaries:
+                background_tasks.add_task(
+                    _process_sync_runtime_summaries,
+                    client_id,
+                    runtime_summaries,
+                )
         try:
             result = await _run_serialized_sync_write(
                 _process_sync_exchange,
@@ -3929,9 +3982,11 @@ def create_app() -> FastAPI:
                 game_auth_source_complete,
                 _public_request_origin(request),
                 local_group_ids,
+                True,
                 timeout=settings.sync_exchange_timeout_seconds,
                 lock_keys=exchange_lock_keys,
             )
+            queue_runtime_summaries()
             game_auth_rows = [
                 {
                     "group_id": item.get("group_id"),
@@ -3987,11 +4042,13 @@ def create_app() -> FastAPI:
                         game_auth_source_complete,
                         _public_request_origin(request),
                         local_group_ids,
+                        True,
                         timeout=settings.sync_exchange_timeout_seconds,
                         lock_keys=exchange_lock_keys,
                     )
                     if isinstance(fallback, dict):
                         fallback["runtime_deferred"] = True
+                        queue_runtime_summaries()
                         return fallback
                 except Exception:
                     logger.exception(
@@ -4202,6 +4259,25 @@ def create_app() -> FastAPI:
         client_id, client_id_error = _extract_sync_client_id(request, payload)
         if client_id_error is not None:
             return client_id_error
+        rejected_key = f"{client_id}:{scope_type}:{group_id or scope_id}"
+        rejected_until = app.state.message_cache_rejected_until.get(rejected_key, 0.0)
+        now = unix_time()
+        if rejected_until > now:
+            return JSONResponse(
+                {
+                    "detail": "该群尚未绑定当前 Windows 执行端",
+                    "code": "group_client_not_bound",
+                    "status": "rejected",
+                    "stored_count": 0,
+                },
+                status_code=409,
+            )
+        if len(app.state.message_cache_rejected_until) > 10000:
+            app.state.message_cache_rejected_until = {
+                key: deadline
+                for key, deadline in app.state.message_cache_rejected_until.items()
+                if deadline > now
+            }
         result = await _run_serialized_sync_write(
             _process_message_cache_upload,
             client_id,
@@ -4222,6 +4298,8 @@ def create_app() -> FastAPI:
                 status_code=503,
             )
         if result.get("status") != "ok":
+            if result.get("code") == "group_client_not_bound":
+                app.state.message_cache_rejected_until[rejected_key] = now + 5.0
             return JSONResponse(
                 {"detail": "该群尚未绑定当前 Windows 执行端", **result},
                 status_code=409,
