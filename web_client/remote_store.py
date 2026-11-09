@@ -12,6 +12,7 @@ import json
 import logging
 import re
 import time
+from threading import Lock
 
 from sqlalchemy import and_, delete, desc, false, func, or_, select
 from sqlalchemy.orm import Session
@@ -47,6 +48,7 @@ AUTH_STATES = frozenset({"active", "expired", "missing", "unverified"})
 IM3_CARD_VALIDATION_VERSION = "v3"
 GAME_AUTH_STATES = frozenset({"active", "expired", "missing"})
 GAME_AUTH_RETENTION_SECONDS = 7 * 86400
+GAME_AUTH_CLEANUP_INTERVAL_SECONDS = 300
 # The Windows client sends only one of these compact, non-sensitive summaries.
 # Keep validation on the server as well: a bearer-token holder must not be able
 # to place arbitrary exception text, URLs, or HTML into an administrator view.
@@ -72,6 +74,8 @@ LOCAL_SOURCE_PROTECTED_ERROR = "local_source_incomplete"
 LOCAL_SOURCE_PARTIAL_STATUS = "partial"
 LOCAL_SOURCE_PARTIAL_ERROR = "auth_source_incomplete"
 logger = logging.getLogger(__name__)
+_game_auth_cleanup_lock = Lock()
+_last_game_auth_cleanup_at = 0.0
 
 
 def _touch_liveness_if_stale(row: object, now: datetime, *, interval_seconds: int = 10) -> bool:
@@ -123,6 +127,22 @@ def cleanup_game_authorizations(db: Session, now: int | None = None) -> int:
         )
     )
     return int(result.rowcount or 0)
+
+
+def cleanup_game_authorizations_if_due(db: Session) -> int:
+    """Run expiry maintenance occasionally, outside every sync heartbeat."""
+
+    global _last_game_auth_cleanup_at
+    now = time.monotonic()
+    if now - _last_game_auth_cleanup_at < GAME_AUTH_CLEANUP_INTERVAL_SECONDS:
+        return 0
+    with _game_auth_cleanup_lock:
+        now = time.monotonic()
+        if now - _last_game_auth_cleanup_at < GAME_AUTH_CLEANUP_INTERVAL_SECONDS:
+            return 0
+        removed = cleanup_game_authorizations(db)
+        _last_game_auth_cleanup_at = now
+        return removed
 
 
 def _websocket_key_mask(value: object) -> str:
@@ -3293,7 +3313,7 @@ def apply_bot_exchange(
     # Game/WebSocket authorization has its own source and retention policy.
     # Cleanup is deliberately best-effort within the exchange transaction;
     # a bad game-auth file must never block normal QQ configuration sync.
-    cleanup_game_authorizations(db)
+    cleanup_game_authorizations_if_due(db)
     # Never honour a caller's authoritative deletion claim unless both source
     # health bits explicitly support it.  This is defensive even though the
     # HTTP layer already derives the same rule.

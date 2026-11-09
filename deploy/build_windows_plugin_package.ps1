@@ -1,5 +1,5 @@
 param(
-    [string]$Version = "1.11.453",
+    [string]$Version = "1.11.454",
     [string]$ArchiveSuffix = "windows-plugin",
     [switch]$PreservePreviousReleases
 )

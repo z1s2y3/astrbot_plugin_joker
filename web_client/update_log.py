@@ -10,6 +10,15 @@ from copy import deepcopy
 # remains available even on a freshly installed portal.
 UPDATE_LOG: tuple[dict[str, object], ...] = (
     {
+        "version": "1.11.454",
+        "date": "2026-11-10",
+        "title": "隔离授权清理任务",
+        "items": (
+            "过期游戏授权清理每 5 分钟最多执行一次，不再跟随每次网页同步执行。",
+            "授权过期策略保持不变，减少数据库维护查询造成的网页等待。",
+        ),
+    },
+    {
         "version": "1.11.453",
         "date": "2026-11-10",
         "title": "节流执行端在线登记",
