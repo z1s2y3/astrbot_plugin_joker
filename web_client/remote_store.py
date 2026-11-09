@@ -3537,9 +3537,6 @@ def apply_bot_exchange(
             if snapshot_owner is not None and snapshot_owner.client_id != normalized_client_id:
                 continue
         if has_game_auth and not (has_config or has_auth):
-            apply_game_authorization_heartbeat(
-                db, client_id, group_id, item.get("game_auth")
-            )
             continue
         # Re-read under the same row lock even when the heartbeat query above
         # already saw this group.  It keeps the decision to accept the local
@@ -3684,14 +3681,7 @@ def apply_bot_exchange(
             # message instead of the misleading "not yet synchronized" result.
             snapshot.auth_activated_at = _safe_bigint(auth.get("activated_at"))
             snapshot.auth_user_id = str(auth.get("user_id", ""))[:32]
-        if game_auth_source_complete and "game_auth" in item:
-            apply_game_authorization_heartbeat(
-                db,
-                client_id,
-                group_id,
-                item.get("game_auth"),
-            )
-        elif has_config and not auth_source_complete and not (
+        if has_config and not auth_source_complete and not (
             is_portal_group and state is not None and state.pull_requested
         ):
             # Do not continue trusting a previously active card while its

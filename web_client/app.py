@@ -1098,6 +1098,7 @@ def _process_sync_heartbeat_details(
     db = get_session_factory()()
     try:
         remote_store.touch_client_liveness(db, client_id)
+        db.commit()
         if auth_source_complete:
             for item in game_auth[:5000]:
                 if not isinstance(item, dict):
@@ -1105,10 +1106,19 @@ def _process_sync_heartbeat_details(
                 group_id = str(item.get("group_id", "") or "").strip()
                 if not remote_store.GROUP_ID_RE.fullmatch(group_id):
                     continue
-                remote_store.apply_game_authorization_heartbeat(
-                    db, client_id, group_id, item.get("auth")
-                )
-        db.commit()
+                try:
+                    remote_store.apply_game_authorization_heartbeat(
+                        db, client_id, group_id, item.get("auth")
+                    )
+                    db.commit()
+                except Exception:
+                    db.rollback()
+                    logger.warning(
+                        "Windows 游戏授权心跳写入失败 client=%s group=%s",
+                        client_id,
+                        group_id,
+                        exc_info=True,
+                    )
     except Exception:
         db.rollback()
         logger.warning(
@@ -3802,7 +3812,9 @@ def create_app() -> FastAPI:
             )
 
     @app.post("/api/sync/v1/exchange")
-    async def sync_exchange(request: Request):
+    async def sync_exchange(
+        request: Request, background_tasks: BackgroundTasks
+    ):
         _require_sync_token(request)
         if settings.data_mode != "remote":
             return JSONResponse(
@@ -3901,7 +3913,7 @@ def create_app() -> FastAPI:
             if str(value or "").strip()
         }
         try:
-            return await _run_serialized_sync_write(
+            result = await _run_serialized_sync_write(
                 _process_sync_exchange,
                 client_id,
                 groups,
@@ -3920,6 +3932,23 @@ def create_app() -> FastAPI:
                 timeout=settings.sync_exchange_timeout_seconds,
                 lock_keys=exchange_lock_keys,
             )
+            game_auth_rows = [
+                {
+                    "group_id": item.get("group_id"),
+                    "auth": item.get("game_auth"),
+                }
+                for item in groups
+                if isinstance(item, dict)
+                and isinstance(item.get("game_auth"), dict)
+            ]
+            if game_auth_source_complete and game_auth_rows:
+                background_tasks.add_task(
+                    _process_sync_heartbeat_details,
+                    client_id,
+                    game_auth_rows,
+                    game_auth_source_complete,
+                )
+            return result
         except asyncio.TimeoutError:
             logger.warning(
                 "Windows 同步事务超时 client=%s timeout=%ss",
