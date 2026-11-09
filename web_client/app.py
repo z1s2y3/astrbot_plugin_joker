@@ -3935,12 +3935,12 @@ def create_app() -> FastAPI:
         # newly saved configuration into an error state.  The whole
         # synchronous transaction runs in a worker thread so MySQL locks and
         # large projections do not block unrelated browser requests.
-        # A complete inventory can contain many groups owned by another
-        # Windows installation. It is only an observation, not a write set.
-        # Serializing those IDs made unrelated clients wait behind each other
-        # for seconds. Keep requests from one client ordered here; MySQL row
-        # locks still protect a real same-group config edit across clients.
-        exchange_lock_keys = {f"client:{client_id}"}
+        # The exchange transaction updates several related rows (client
+        # liveness, group cursors and configuration state). After the payload
+        # reads were made lightweight, a short global write gate is safer than
+        # letting different Windows clients acquire those rows in conflicting
+        # orders. Browser requests never use this gate.
+        exchange_lock_keys = {"__execution_exchange__"}
         def queue_runtime_summaries(sync_result: object) -> None:
             if not (config_source_complete and runtime_summaries):
                 return

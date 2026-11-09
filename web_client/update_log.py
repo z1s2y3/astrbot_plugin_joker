@@ -10,6 +10,15 @@ from copy import deepcopy
 # remains available even on a freshly installed portal.
 UPDATE_LOG: tuple[dict[str, object], ...] = (
     {
+        "version": "1.11.459",
+        "date": "2026-11-10",
+        "title": "消除同步写入死锁",
+        "items": (
+            "Windows 同步写入改为短事务顺序执行，避免多台电脑同时更新时出现数据库死锁。",
+            "网页浏览、保存和用户操作不使用该同步队列。",
+        ),
+    },
+    {
         "version": "1.11.458",
         "date": "2026-11-10",
         "title": "减少同步快照读取",
