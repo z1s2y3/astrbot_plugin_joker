@@ -220,6 +220,20 @@ def _migrate_database(engine: Engine) -> None:
                             f"ADD COLUMN {name} {definition}"
                         )
                     )
+        console_indexes = {
+            index["name"]
+            for index in inspect(engine).get_indexes("portal_console_events")
+        }
+        console_scope_index = "ix_portal_console_events_group_client_action_time"
+        if console_scope_index not in console_indexes:
+            with engine.begin() as connection:
+                connection.execute(
+                    text(
+                        f"CREATE INDEX {console_scope_index} ON "
+                        "portal_console_events "
+                        "(group_id, client_id, action, occurred_at)"
+                    )
+                )
 
     if "portal_group_config_snapshots" not in inspector.get_table_names():
         return

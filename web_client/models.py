@@ -11,6 +11,7 @@ from sqlalchemy import (
     DateTime,
     ForeignKey,
     Integer,
+    Index,
     LargeBinary,
     String,
     Text,
@@ -386,6 +387,15 @@ class PortalConsoleEvent(Base):
     """
 
     __tablename__ = "portal_console_events"
+    __table_args__ = (
+        Index(
+            "ix_portal_console_events_group_client_action_time",
+            "group_id",
+            "client_id",
+            "action",
+            "occurred_at",
+        ),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     event_id: Mapped[str] = mapped_column(String(80), unique=True, index=True)

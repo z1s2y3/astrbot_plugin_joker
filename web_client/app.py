@@ -945,7 +945,7 @@ def _process_sync_exchange(
             group_id = str(raw_group_id).strip()
             if group_id not in bound_group_id_set:
                 continue
-            snapshot = remote_store.get_snapshot(db, group_id)
+            snapshot = remote_store.get_sync_snapshot(db, group_id)
             if snapshot is not None and str(snapshot.client_id or "") == client_id:
                 runtime_accepted_group_ids.append(group_id)
         runtime_accepted_group_ids.sort()
@@ -1212,6 +1212,10 @@ def _process_message_cache_upload(
             if scope_type == "private":
                 stored = remote_store.store_private_message_events(
                     db, client_id, scope_id, messages
+                )
+            elif messages:
+                stored = remote_store.store_runtime_message_events(
+                    db, client_id, group_id, messages
                 )
             else:
                 stored = remote_store.store_runtime_messages(
@@ -4178,7 +4182,7 @@ def create_app() -> FastAPI:
             scope_id,
             complete_user_id,
             complete_count,
-            lock_keys=[group_id or f"private:{scope_id}"],
+            lock_keys=[f"message-cache:{group_id or f'private:{scope_id}'}"],
         )
         if result.get("status") == "error":
             return JSONResponse(
@@ -8974,7 +8978,7 @@ def create_app() -> FastAPI:
             return access
 
         if settings.data_mode == "remote":
-            snapshot = remote_store.get_snapshot(db, group_id)
+            snapshot = remote_store.get_sync_snapshot(db, group_id)
             try:
                 offline_after_seconds = Settings.from_env().offline_after_seconds
             except Exception:
@@ -9056,9 +9060,8 @@ def create_app() -> FastAPI:
 
         snapshot = None
         if settings.data_mode == "remote":
-            snapshot = remote_store.get_snapshot(db, group_id)
-            raw_runtime = getattr(snapshot, "runtime_json", None) if snapshot is not None else None
-            updated_at = getattr(snapshot, "runtime_updated_at", None) if snapshot is not None else None
+            updated_at = remote_store.get_runtime_updated_at(db, group_id)
+            raw_runtime = None
         else:
             try:
                 view = get_group_view(group_id, db, include_members=False)
@@ -9085,6 +9088,8 @@ def create_app() -> FastAPI:
                 {"group_id": str(group_id), "unchanged": True, "version": runtime_version},
                 headers={"Cache-Control": "private, no-store"},
             )
+        if settings.data_mode == "remote":
+            raw_runtime = remote_store.get_runtime_json(db, group_id)
         runtime = _normalize_runtime_panels(raw_runtime, include_members=False)
         return JSONResponse(
             {

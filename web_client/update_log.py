@@ -10,6 +10,16 @@ from copy import deepcopy
 # remains available even on a freshly installed portal.
 UPDATE_LOG: tuple[dict[str, object], ...] = (
     {
+        "version": "1.11.448",
+        "date": "2026-11-10",
+        "title": "网页同步性能优化",
+        "items": (
+            "运行状态轮询只读取版本字段，数据没有变化时不再加载整份群运行数据。",
+            "群消息缓存改为独立事件写入，不再锁住群配置快照。",
+            "为群消息历史增加组合索引，减少消息记录和后台日志分页等待。",
+        ),
+    },
+    {
         "version": "1.11.446",
         "date": "2026-11-02",
         "title": "修复 Windows 在线状态误报",

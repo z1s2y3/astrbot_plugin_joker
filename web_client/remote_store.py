@@ -6,6 +6,7 @@ from copy import deepcopy
 from datetime import datetime, timedelta, timezone
 from collections.abc import Callable
 from typing import Any
+from types import SimpleNamespace
 import hashlib
 import json
 import logging
@@ -1281,6 +1282,43 @@ def get_snapshot(
     return db.scalar(statement)
 
 
+def get_sync_snapshot(db: Session, group_id: str) -> Any:
+    """Load only fields needed by the small browser sync-status endpoint."""
+
+    row = db.execute(
+        select(
+            GroupConfigSnapshot.client_id,
+            GroupConfigSnapshot.revision,
+            GroupConfigSnapshot.applied_revision,
+            GroupConfigSnapshot.refresh_requested,
+            GroupConfigSnapshot.last_seen_at,
+            GroupConfigSnapshot.sync_status,
+            GroupConfigSnapshot.sync_error,
+        ).where(GroupConfigSnapshot.group_id == str(group_id))
+    ).mappings().one_or_none()
+    return SimpleNamespace(**row) if row is not None else None
+
+
+def get_runtime_updated_at(db: Session, group_id: str) -> datetime | None:
+    """Read the runtime version without loading the large JSON projection."""
+
+    return db.scalar(
+        select(GroupConfigSnapshot.runtime_updated_at).where(
+            GroupConfigSnapshot.group_id == str(group_id)
+        )
+    )
+
+
+def get_runtime_json(db: Session, group_id: str) -> Any:
+    """Load the runtime JSON only after the browser version changed."""
+
+    return db.scalar(
+        select(GroupConfigSnapshot.runtime_json).where(
+            GroupConfigSnapshot.group_id == str(group_id)
+        )
+    )
+
+
 def store_runtime_members(
     db: Session,
     client_id: str,
@@ -1604,19 +1642,27 @@ def _persist_group_message_events(
             # Replays commonly bring richer metadata than the first fast
             # runtime upload (for example a QQ image URL or face name). Keep
             # the event identity stable while refreshing its display payload.
-            existing_event.user_name = user_name
-            existing_event.message_type = str(raw.get("message_types", "") or "")[:128]
-            existing_event.message_content = content
+            message_type = str(raw.get("message_types", "") or "")[:128]
+            if existing_event.user_name != user_name:
+                existing_event.user_name = user_name
+            if existing_event.message_type != message_type:
+                existing_event.message_type = message_type
+            if existing_event.message_content != content:
+                existing_event.message_content = content
             direction = bounded_text(raw.get("direction"), 16).lower()
             if direction in {"inbound", "outbound", "system"}:
-                existing_event.direction = direction
+                if existing_event.direction != direction:
+                    existing_event.direction = direction
             payload = (
                 dict(existing_event.message_payload)
                 if isinstance(existing_event.message_payload, dict)
                 else {}
             )
-            payload.update(_message_event_payload(raw))
-            existing_event.message_payload = payload
+            updated_payload = _message_event_payload(raw)
+            if updated_payload:
+                payload.update(updated_payload)
+            if payload != (existing_event.message_payload or {}):
+                existing_event.message_payload = payload
             continue
         db.add(
             PortalConsoleEvent(
@@ -1642,6 +1688,39 @@ def _persist_group_message_events(
         )
         stored += 1
     return stored
+
+
+def store_runtime_message_events(
+    db: Session,
+    client_id: str,
+    group_id: str,
+    messages: list[dict[str, Any]],
+) -> int:
+    """Store message events without locking or rewriting the group snapshot."""
+
+    normalized_client = str(client_id or "").strip()[:64]
+    normalized_group = str(group_id or "").strip()
+    if not normalized_client or not GROUP_ID_RE.fullmatch(normalized_group):
+        return 0
+    snapshot = db.execute(
+        select(
+            GroupConfigSnapshot.client_id,
+            GroupConfigSnapshot.id,
+        ).where(GroupConfigSnapshot.group_id == normalized_group)
+    ).mappings().one_or_none()
+    if snapshot is None:
+        return 0
+    bound_client = str(snapshot.get("client_id") or normalized_client).strip()[:64]
+    incoming: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    mirror_sources: dict[str, set[str]] = {}
+    for raw in list(messages or [])[:100]:
+        if isinstance(raw, dict):
+            _append_runtime_message(incoming, seen, mirror_sources, raw)
+    if not incoming:
+        return 0
+    _persist_group_message_events(db, bound_client, normalized_group, incoming)
+    return len(incoming)
 
 
 def _runtime_message_key(row: Any) -> str:
