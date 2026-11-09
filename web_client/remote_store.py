@@ -3374,7 +3374,6 @@ def apply_bot_exchange(
             for snapshot in db.scalars(
                 select(GroupConfigSnapshot)
                 .where(GroupConfigSnapshot.group_id.in_(client_portal_group_ids))
-                .with_for_update()
             )
         }
         states = {
@@ -3382,7 +3381,6 @@ def apply_bot_exchange(
             for state in db.scalars(
                 select(GroupClientSync)
                 .where(GroupClientSync.group_id.in_(client_portal_group_ids))
-                .with_for_update()
             )
         }
         for group_id in client_portal_group_ids:
