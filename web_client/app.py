@@ -2296,6 +2296,11 @@ def create_app() -> FastAPI:
     # Runtime panels are informational and can be refreshed in short batches.
     # Do not let several Windows heartbeats rebuild every group panel at once.
     app.state.runtime_summary_last_queued = {}
+    # Old Windows clients can still use the former five-second heartbeat.
+    # Cache only an entirely idle exchange briefly so those requests do not
+    # repeat the same database projection while a newer plugin is being rolled
+    # out. Any local config/runtime/log payload bypasses this cache.
+    app.state.idle_exchange_cache = {}
     # Repeated uploads from an unbound Windows client should not occupy a
     # database worker for every retry. Keep this short so a newly authorized
     # group becomes eligible quickly.
@@ -3939,6 +3944,44 @@ def create_app() -> FastAPI:
         sync_scope_complete = payload.get("sync_scope_complete", False)
         if not isinstance(sync_scope_complete, bool):
             return JSONResponse({"detail": "同步范围状态格式无效"}, status_code=400)
+        idle_exchange_key = None
+        if (
+            config_source_complete
+            and auth_source_complete
+            and not groups
+            and not runtime_summaries
+            and not console_events
+            and not apply_failures
+        ):
+            idle_exchange_key = (
+                client_id,
+                tuple(
+                    sorted(
+                        str(group_id).strip()
+                        for group_id in known_group_ids
+                        if remote_store.GROUP_ID_RE.fullmatch(str(group_id).strip())
+                    )
+                ),
+                tuple(
+                    sorted(
+                        str(group_id).strip()
+                        for group_id in local_group_ids
+                        if remote_store.GROUP_ID_RE.fullmatch(str(group_id).strip())
+                    )
+                ),
+                authoritative_group_ids,
+                game_auth_source_complete,
+                sync_scope_complete,
+            )
+            now = unix_time()
+            cached_exchange = app.state.idle_exchange_cache.get(idle_exchange_key)
+            if (
+                isinstance(cached_exchange, tuple)
+                and len(cached_exchange) == 2
+                and float(cached_exchange[0]) > now
+                and isinstance(cached_exchange[1], dict)
+            ):
+                return deepcopy(cached_exchange[1])
         # The Windows process reports only errors that happened *after* a
         # previous exchange succeeded (local JSON write or ACK).  Keep the
         # exact-revision guard in remote_store so an old report cannot turn a
@@ -4019,6 +4062,20 @@ def create_app() -> FastAPI:
                     client_id,
                     game_auth_rows,
                     game_auth_source_complete,
+                )
+            if idle_exchange_key is not None and isinstance(result, dict):
+                now = unix_time()
+                if len(app.state.idle_exchange_cache) > 1000:
+                    app.state.idle_exchange_cache = {
+                        key: value
+                        for key, value in app.state.idle_exchange_cache.items()
+                        if isinstance(value, tuple)
+                        and len(value) == 2
+                        and float(value[0]) > now
+                    }
+                app.state.idle_exchange_cache[idle_exchange_key] = (
+                    now + 8.0,
+                    deepcopy(result),
                 )
             return result
         except asyncio.TimeoutError:
