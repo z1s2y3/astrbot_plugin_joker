@@ -1,5 +1,5 @@
 param(
-    [string]$Version = "1.11.456",
+    [string]$Version = "1.11.457",
     [string]$ArchiveSuffix = "all-in-one",
     [switch]$PreservePreviousReleases
 )

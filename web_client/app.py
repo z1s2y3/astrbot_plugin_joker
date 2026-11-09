@@ -3935,24 +3935,12 @@ def create_app() -> FastAPI:
         # newly saved configuration into an error state.  The whole
         # synchronous transaction runs in a worker thread so MySQL locks and
         # large projections do not block unrelated browser requests.
-        exchange_lock_keys = {
-            str(value or "").strip()
-            for value in [
-                *known_group_ids,
-                *local_group_ids,
-                *(
-                    item.get("group_id")
-                    for item in groups
-                    if isinstance(item, dict)
-                ),
-                *(
-                    item.get("group_id")
-                    for item in apply_failures
-                    if isinstance(item, dict)
-                ),
-            ]
-            if str(value or "").strip()
-        }
+        # A complete inventory can contain many groups owned by another
+        # Windows installation. It is only an observation, not a write set.
+        # Serializing those IDs made unrelated clients wait behind each other
+        # for seconds. Keep requests from one client ordered here; MySQL row
+        # locks still protect a real same-group config edit across clients.
+        exchange_lock_keys = {f"client:{client_id}"}
         def queue_runtime_summaries(sync_result: object) -> None:
             if not (config_source_complete and runtime_summaries):
                 return

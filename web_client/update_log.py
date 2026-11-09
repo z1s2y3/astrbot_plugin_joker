@@ -10,6 +10,15 @@ from copy import deepcopy
 # remains available even on a freshly installed portal.
 UPDATE_LOG: tuple[dict[str, object], ...] = (
     {
+        "version": "1.11.457",
+        "date": "2026-11-10",
+        "title": "分离多电脑同步队列",
+        "items": (
+            "不同 Windows 电脑不再因已知群清单重叠而互相等待。",
+            "同一台电脑仍按顺序同步，群配置保存继续由数据库保护。",
+        ),
+    },
+    {
         "version": "1.11.456",
         "date": "2026-11-10",
         "title": "运行面板后台限流",
