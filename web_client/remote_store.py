@@ -3298,10 +3298,10 @@ def requested_group_refresh_ids(
     # ``refresh_requested`` value from MySQL and make a completed pull appear
     # stuck forever.
     db.flush()
-    # Lock the rows while selecting/consuming hints.  Without the lock, two
-    # overlapping heartbeat workers can both receive the same one-group hint;
-    # more importantly, a permanently missing local group could keep winning
-    # the single hint slot and starve a live group's refresh request.
+    # Read only the small selection fields first. A full ``FOR UPDATE`` scan
+    # can lock several groups while a background runtime upload holds one of
+    # them, causing an avoidable MySQL deadlock. The final selected row is
+    # locked below before its missing-group hint is consumed.
     unassigned_visible = (
         and_(
             GroupConfigSnapshot.client_id == "",
@@ -3310,57 +3310,66 @@ def requested_group_refresh_ids(
         if normalized_group_ids
         else false()
     )
-    snapshots = list(
-        db.scalars(
-            select(GroupConfigSnapshot)
-            .where(
-                GroupConfigSnapshot.refresh_requested.is_(True),
-                or_(
-                    GroupConfigSnapshot.client_id == normalized_client_id,
-                    unassigned_visible,
-                ),
-            )
-            .with_for_update()
+    candidates = db.execute(
+        select(
+            GroupConfigSnapshot.group_id,
+            GroupConfigSnapshot.client_id,
+            GroupConfigSnapshot.sync_status,
+        ).where(
+            GroupConfigSnapshot.refresh_requested.is_(True),
+            or_(
+                GroupConfigSnapshot.client_id == normalized_client_id,
+                unassigned_visible,
+            ),
         )
-    )
+    ).all()
     # A snapshot with no client ID is a first-upload placeholder. It is safe
     # to hand it only to a client that actually reported that group. A row
     # already owned by this client is also deliverable when it has just been
     # removed from ``known_group_ids``; see the tombstone explanation above.
     eligible = [
-        snapshot
-        for snapshot in snapshots
-        if snapshot.client_id == normalized_client_id
+        (str(group_id), str(client_id or ""), str(sync_status or ""))
+        for group_id, client_id, sync_status in candidates
+        if str(client_id or "") == normalized_client_id
         or (
-            not snapshot.client_id
-            and str(snapshot.group_id) in normalized_group_ids
+            not str(client_id or "")
+            and str(group_id) in normalized_group_ids
         )
     ]
     # A tombstone is useful for one CMD diagnostic, but it cannot be uploaded
     # until the operator restores the group locally.  Always deliver live
     # groups first so one stale/deleted group cannot block every other refresh.
     live = [
-        snapshot
-        for snapshot in eligible
-        if str(getattr(snapshot, "sync_status", "") or "")
-        != LOCAL_GROUP_MISSING_STATUS
+        item
+        for item in eligible
+        if item[2] != LOCAL_GROUP_MISSING_STATUS
     ]
     unavailable = [
-        snapshot
-        for snapshot in eligible
-        if str(getattr(snapshot, "sync_status", "") or "")
-        == LOCAL_GROUP_MISSING_STATUS
+        item
+        for item in eligible
+        if item[2] == LOCAL_GROUP_MISSING_STATUS
     ]
-    live.sort(key=lambda snapshot: str(snapshot.group_id))
-    unavailable.sort(key=lambda snapshot: str(snapshot.group_id))
+    live.sort(key=lambda item: item[0])
+    unavailable.sort(key=lambda item: item[0])
     selected = (live + unavailable)[:MAX_RECONCILIATION_HINTS_PER_EXCHANGE]
-    selected_ids = [str(snapshot.group_id) for snapshot in selected]
-    # The Windows client can only report that a missing group is absent; it
-    # cannot upload anything for it.  Consume that diagnostic hint after one
-    # delivery.  If the group is restored later, the user can request a fresh
-    # sync again and a new durable hint will be created.
-    for snapshot in selected:
-        if str(getattr(snapshot, "sync_status", "") or "") == LOCAL_GROUP_MISSING_STATUS:
+    selected_ids: list[str] = []
+    # A selected missing group is consumed only after a current row lock. The
+    # lock makes the update safe without holding unrelated group rows while
+    # deciding which single hint to return.
+    for group_id, _candidate_client_id, _ in selected:
+        snapshot = get_snapshot(db, group_id, for_update=True)
+        if snapshot is None or not snapshot.refresh_requested:
+            continue
+        if not (
+            str(snapshot.client_id or "") == normalized_client_id
+            or (
+                not str(snapshot.client_id or "")
+                and group_id in normalized_group_ids
+            )
+        ):
+            continue
+        selected_ids.append(group_id)
+        if str(snapshot.sync_status or "") == LOCAL_GROUP_MISSING_STATUS:
             snapshot.refresh_requested = False
     return selected_ids
 

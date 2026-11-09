@@ -10,6 +10,15 @@ from copy import deepcopy
 # remains available even on a freshly installed portal.
 UPDATE_LOG: tuple[dict[str, object], ...] = (
     {
+        "version": "1.11.460",
+        "date": "2026-11-10",
+        "title": "修复配置拉取锁冲突",
+        "items": (
+            "待拉取配置先轻量筛选，再仅锁定实际返回的群记录。",
+            "后台运行数据保存与 Windows 同步不再因多群锁交叉产生死锁。",
+        ),
+    },
+    {
         "version": "1.11.459",
         "date": "2026-11-10",
         "title": "消除同步写入死锁",
