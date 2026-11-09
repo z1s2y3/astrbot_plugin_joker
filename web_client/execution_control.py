@@ -8,7 +8,7 @@ installations may execute it.  This state is deliberately kept in
 from __future__ import annotations
 
 import re
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
@@ -119,8 +119,20 @@ def record_execution_client(db: Session, client_id: object) -> None:
     setting = db.get(PortalSetting, EXECUTION_CLIENT_REGISTRY_SETTING_KEY)
     registry = setting.value_json if setting and isinstance(setting.value_json, dict) else {}
     registry = dict(registry)
+    existing = registry.get(normalized)
+    existing_seen = (
+        existing.get("last_seen_at")
+        if isinstance(existing, dict)
+        else existing
+    )
+    parsed_seen = _parse_client_liveness(existing_seen)
+    now = datetime.now(timezone.utc)
+    if parsed_seen is not None and (
+        now.replace(tzinfo=None) - parsed_seen <= timedelta(seconds=15)
+    ):
+        return
     registry[normalized] = {
-        "last_seen_at": datetime.now(timezone.utc).isoformat(timespec="seconds")
+        "last_seen_at": now.isoformat(timespec="seconds")
     }
     # Keep the registry bounded if a token is accidentally used by many
     # short-lived installations.

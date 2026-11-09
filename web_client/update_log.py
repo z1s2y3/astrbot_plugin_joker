@@ -10,6 +10,15 @@ from copy import deepcopy
 # remains available even on a freshly installed portal.
 UPDATE_LOG: tuple[dict[str, object], ...] = (
     {
+        "version": "1.11.453",
+        "date": "2026-11-10",
+        "title": "节流执行端在线登记",
+        "items": (
+            "执行端在线记录 15 秒内只写一次，减少同步请求对全局设置的锁竞争。",
+            "多台 Windows 同时在线时降低数据库写入和网页等待。",
+        ),
+    },
+    {
         "version": "1.11.452",
         "date": "2026-11-10",
         "title": "隔离无关同步请求",
