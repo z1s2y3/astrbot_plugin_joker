@@ -71,7 +71,19 @@ _MAX_ARCHIVE_IMAGE_BYTES = _MAX_ARCHIVE_IMAGE_MB * 1024 * 1024
 _IMAGE_ARCHIVE_DIRNAME = "message_images"
 _PENDING_CACHE_DIRNAME = ".pending"
 _PENDING_CACHE_MAX_RECORDS = 20000
-_IMAGE_SOURCE_KEYS = ("url", "image_url", "file", "file_", "path")
+_IMAGE_SOURCE_KEYS = (
+    "url",
+    "image_url",
+    "imageUrl",
+    "origin_url",
+    "originUrl",
+    "download_url",
+    "downloadUrl",
+    "file",
+    "file_",
+    "path",
+)
+_IMAGE_SEGMENT_TYPES = {"image", "flashimage", "flash_image", "mface", "marketface"}
 
 # AstrBot's built-in components cover most of these fields, while adapters
 # commonly add a few more (rich emoji IDs, dimensions, durations, etc.).
@@ -400,18 +412,24 @@ def extract_image_sources(record: dict | None) -> list[str]:
     sources: list[str] = []
     seen: set[str] = set()
     for segment in segments:
-        if not isinstance(segment, dict) or str(segment.get("type", "")).lower() != "image":
+        if (
+            not isinstance(segment, dict)
+            or str(segment.get("type", "")).strip().lower() not in _IMAGE_SEGMENT_TYPES
+        ):
             continue
         data = segment.get("data", {})
         if not isinstance(data, dict):
             continue
-        for key in _IMAGE_SOURCE_KEYS:
-            source = str(data.get(key, "") or "").strip()
-            if not source.startswith(("https://", "http://", "base64://")):
-                continue
-            if source not in seen:
-                seen.add(source)
-                sources.append(source)
+        raw_data = data.get("raw", {})
+        source_mappings = (data, raw_data) if isinstance(raw_data, dict) else (data,)
+        for source_data in source_mappings:
+            for key in _IMAGE_SOURCE_KEYS:
+                source = str(source_data.get(key, "") or "").strip()
+                if not source.startswith(("https://", "http://", "base64://")):
+                    continue
+                if source not in seen:
+                    seen.add(source)
+                    sources.append(source)
     return sources
 
 
@@ -711,7 +729,7 @@ def get_archived_message_images(
     message_id: object,
     *,
     max_items: int = 1,
-    max_bytes: int = 256 * 1024,
+    max_bytes: int = 512 * 1024,
 ) -> list[dict[str, str]]:
     """Read only this message's bounded local image archive for web replay.
 
@@ -731,7 +749,7 @@ def get_archived_message_images(
         limit = max(1, min(8, int(max_items)))
         byte_limit = max(16 * 1024, min(1024 * 1024, int(max_bytes)))
     except (TypeError, ValueError, OverflowError):
-        limit, byte_limit = 1, 256 * 1024
+        limit, byte_limit = 1, 512 * 1024
     day_dir = _get_group_media_dir(safe_group, create=False) / _date_key(event_timestamp) / safe_user
     if not day_dir.is_dir():
         return []
@@ -1306,7 +1324,9 @@ def _mirror_segment_fingerprint(segments: list[dict]) -> list[dict[str, str]]:
         segment_type = str(segment.get("type", "") or "").strip().lower()
         data = segment.get("data", {})
         data = data if isinstance(data, dict) else {}
-        if segment_type in {"image", "flashimage", "flash_image"}:
+        if segment_type in _IMAGE_SEGMENT_TYPES:
+            raw_data = data.get("raw", {})
+            raw_data = raw_data if isinstance(raw_data, dict) else {}
             identity = (
                 data.get("file_id")
                 or data.get("file")
@@ -1315,6 +1335,12 @@ def _mirror_segment_fingerprint(segments: list[dict]) -> list[dict[str, str]]:
                 or data.get("id")
                 or data.get("url")
                 or data.get("image_url")
+                or raw_data.get("file_id")
+                or raw_data.get("file")
+                or raw_data.get("image_id")
+                or raw_data.get("id")
+                or raw_data.get("url")
+                or raw_data.get("image_url")
                 or "image"
             )
             identity = str(identity or "").split("?", 1)[0].split("#", 1)[0]

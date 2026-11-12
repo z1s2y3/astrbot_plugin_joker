@@ -800,6 +800,12 @@ def _message_cache_projection(raw: object) -> dict[str, Any] | None:
         for segment in (segments if isinstance(segments, list) else [])
         if isinstance(segment, dict) and str(segment.get("type", "")).strip()
     ]
+    image_segment_types = {"image", "flashimage", "flash_image", "mface", "marketface"}
+    media_source_keys = (
+        "url", "image_url", "imageUrl", "origin_url", "originUrl",
+        "download_url", "downloadUrl", "record_url", "audio_url",
+        "video_url", "file", "file_", "path",
+    )
     media_urls: list[str] = []
     media_items: list[dict[str, str]] = []
     media_identity: set[str] = set()
@@ -809,15 +815,16 @@ def _message_cache_projection(raw: object) -> dict[str, Any] | None:
             continue
         segment_type = str(segment.get("type", "")).strip().lower()
         if segment_type not in {
-            "image", "face", "mface", "marketface", "record", "audio", "video", "file"
+            "image", "flashimage", "flash_image", "face", "mface", "marketface",
+            "record", "audio", "video", "file"
         }:
             continue
         data = segment.get("data", {})
         if not isinstance(data, dict):
             continue
+        raw_face = data.get("raw", {})
+        raw_face = raw_face if isinstance(raw_face, dict) else {}
         if segment_type in {"face", "mface", "marketface"}:
-            raw_face = data.get("raw", {})
-            raw_face = raw_face if isinstance(raw_face, dict) else {}
             face_id = str(
                 raw_face.get("id")
                 or raw_face.get("face_id")
@@ -850,85 +857,85 @@ def _message_cache_projection(raw: object) -> dict[str, Any] | None:
                             "name": face_label or f"QQ表情 {face_id}",
                         }
                     )
-        for key in (
-            "url", "image_url", "record_url", "audio_url", "video_url",
-            "file", "file_", "path",
-        ):
-            candidate = str(data.get(key, "") or "").strip()
-            if not candidate.startswith("https://"):
-                continue
-            try:
-                parsed = urlsplit(candidate)
-                hostname = (parsed.hostname or "").lower().rstrip(".")
-            except ValueError:
-                continue
-            if parsed.scheme != "https" or not any(
-                hostname == suffix or hostname.endswith("." + suffix)
-                for suffix in ("qpic.cn", "gtimg.cn", "qq.com", "nt.qq.com.cn")
-            ):
-                continue
-            normalized_url = candidate[:2048]
-            if segment_type in {"image", "mface", "marketface"} and normalized_url not in media_urls:
-                media_urls.append(normalized_url)
-            if segment_type in {"image", "mface", "marketface"}:
-                identity = (
-                    data.get("file_id")
-                    or data.get("file")
-                    or data.get("file_")
-                    or data.get("image_id")
-                    or data.get("id")
-                    or normalized_url.split("?", 1)[0].split("#", 1)[0]
-                )
-                media_key = f"image:{str(identity)[:256]}"
+        source_mappings = (data, raw_face) if raw_face else (data,)
+        for source_data in source_mappings:
+            for key in media_source_keys:
+                candidate = str(source_data.get(key, "") or "").strip()
+                if not candidate.startswith("https://"):
+                    continue
+                try:
+                    parsed = urlsplit(candidate)
+                    hostname = (parsed.hostname or "").lower().rstrip(".")
+                except ValueError:
+                    continue
+                if parsed.scheme != "https" or not any(
+                    hostname == suffix or hostname.endswith("." + suffix)
+                    for suffix in ("qpic.cn", "gtimg.cn", "qq.com", "nt.qq.com.cn")
+                ):
+                    continue
+                normalized_url = candidate[:2048]
+                if segment_type in image_segment_types and normalized_url not in media_urls:
+                    media_urls.append(normalized_url)
+                if segment_type in image_segment_types:
+                    identity = (
+                        source_data.get("file_id")
+                        or source_data.get("file")
+                        or source_data.get("file_")
+                        or source_data.get("image_id")
+                        or source_data.get("id")
+                        or normalized_url.split("?", 1)[0].split("#", 1)[0]
+                    )
+                    media_key = f"image:{str(identity)[:256]}"
+                else:
+                    media_key = f"{segment_type}:{normalized_url}"
+                if media_key not in media_identity:
+                    media_identity.add(media_key)
+                    media_items.append(
+                        {
+                            "kind": (
+                                "image"
+                                if segment_type in image_segment_types
+                                else ("audio" if segment_type in {"record", "audio"} else segment_type)
+                            ),
+                            "url": normalized_url,
+                            "name": str(
+                                source_data.get("file_name")
+                                or source_data.get("name")
+                                or source_data.get("file")
+                                or data.get("file_name")
+                                or data.get("name")
+                                or data.get("file")
+                                or ""
+                            )[:160],
+                        }
+                    )
+                break
             else:
-                media_key = f"{segment_type}:{normalized_url}"
-            if media_key not in media_identity:
-                media_identity.add(media_key)
-                media_items.append(
-                    {
-                        "kind": (
-                            "image"
-                            if segment_type in {"image", "mface", "marketface"}
-                            else ("audio" if segment_type in {"record", "audio"} else segment_type)
-                        ),
-                        "url": normalized_url,
-                        "name": str(
-                            data.get("file_name")
-                            or data.get("name")
-                            or data.get("file")
-                            or ""
-                        )[:160],
-                    }
-                )
+                continue
             break
         if len(media_items) >= 8:
             break
-    # Use Windows' local archive only as a fallback. A live QQ URL and its
-    # archived data URL describe the same image; returning both makes the web
-    # page render the sender's one image twice. If no live image was
-    # projected, the archive keeps historical messages viewable after a QQ
-    # CDN URL has expired.
-    if not any(
-        str(item.get("kind", "")).lower() == "image"
-        and str(item.get("url", "")).strip()
-        for item in media_items
-    ):
-        try:
-            from .message_cache import get_archived_message_images
+    # QQ CDN URLs for stickers are short-lived. Prefer the local archive once
+    # it has been created, keeping only non-image media beside it so one QQ
+    # picture never appears twice in the Linux chat history.
+    try:
+        from .message_cache import get_archived_message_images
 
-            archived = get_archived_message_images(
-                str(raw.get("group_id", "") or ""),
-                str(raw.get("user_id", "") or ""),
-                raw.get("timestamp", 0),
-                raw.get("message_id", ""),
-            )
-            for item in archived:
-                if not any(existing.get("url") == item.get("url") for existing in media_items):
-                    media_items.append(item)
-                if len(media_items) >= 8:
-                    break
-        except Exception:
-            pass
+        archived = get_archived_message_images(
+            str(raw.get("group_id", "") or ""),
+            str(raw.get("user_id", "") or ""),
+            raw.get("timestamp", 0),
+            raw.get("message_id", ""),
+        )
+        if archived:
+            media_items = archived[:8] + [
+                item
+                for item in media_items
+                if str(item.get("kind", "")).lower() != "image"
+            ][: max(0, 8 - len(archived))]
+            media_urls = [str(item.get("url", "")) for item in archived]
+    except Exception:
+        pass
     return {
         "scope_type": str(raw.get("scope_type", "group") or "group")[:16],
         "scope_id": str(raw.get("private_user_id", raw.get("user_id", "")) or "")[:32],
@@ -955,12 +962,12 @@ def _message_cache_projection(raw: object) -> dict[str, Any] | None:
         "face_labels": face_labels[:8],
         "direction": str(raw.get("direction", "inbound") or "inbound")[:16],
         "has_image": bool(
-            "image" in segment_types
+            bool(set(segment_types) & image_segment_types)
             or raw.get("has_image")
             or raw.get("image_paths")
             or raw.get("images")
         ),
-        "image_count": sum(1 for kind in segment_types if kind == "image"),
+        "image_count": sum(1 for kind in segment_types if kind in image_segment_types),
         "video_count": sum(1 for kind in segment_types if kind == "video"),
         "file_count": sum(1 for kind in segment_types if kind == "file"),
         "record_count": sum(1 for kind in segment_types if kind in {"record", "audio"}),

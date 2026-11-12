@@ -666,7 +666,7 @@ const initGroupCollectionSearch = () => {
   let selectedMessageRecords = null;
   let selectedMessageRequest = 0;
   const messageTypeLabels = {
-    face: "表情", image: "图片", record: "语音", audio: "语音", video: "视频",
+    face: "表情", mface: "表情包", marketface: "表情包", flashimage: "图片", flash_image: "图片", image: "图片", record: "语音", audio: "语音", video: "视频",
     file: "文件", forward: "转发", node: "转发", at: "艾特", text: "文字", operation: "群管操作",
   };
   const messageText = (value, fallback = "-") => {

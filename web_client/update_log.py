@@ -10,6 +10,15 @@ from copy import deepcopy
 # remains available even on a freshly installed portal.
 UPDATE_LOG: tuple[dict[str, object], ...] = (
     {
+        "version": "1.11.464",
+        "date": "2026-11-12",
+        "title": "修复聊天表情包显示",
+        "items": (
+            "QQ群动态表情和商城表情会归档为网页可显示的图片。",
+            "归档完成后自动补传，网页不再依赖容易过期的 QQ 图片链接。",
+        ),
+    },
+    {
         "version": "1.11.463",
         "date": "2026-11-10",
         "title": "缓存空同步请求",

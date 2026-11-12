@@ -4026,7 +4026,12 @@ class MyPlugin(Star):
         while True:
             record = await self._message_image_queue.get()
             try:
-                await self._archive_queued_group_message_images(record)
+                saved = await self._archive_queued_group_message_images(record)
+                # QQ CDN URLs for images and dynamic stickers expire. Once the
+                # local archive exists, re-upload this message so Linux swaps
+                # the temporary URL for the durable archived preview.
+                if saved > 0:
+                    self._schedule_message_cache_upload(record)
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
